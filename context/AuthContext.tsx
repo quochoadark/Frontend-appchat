@@ -1,121 +1,73 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { createContext, useCallback, useContext, useEffect, useState } from 'react';
-import { getUserApi, loginApi, TOKEN_KEY, USER_KEY, type User } from '@/lib/api';
+import React, { createContext, useContext, useState, useEffect } from 'react'
+import AsyncStorage from '@react-native-async-storage/async-storage'
+import { loginApi } from '../lib/api'
 
-interface AuthState {
-  token: string | null;
-  user: User | null;
-  loading: boolean;
-  login: (email: string, password: string) => Promise<string | null>;
-  loginAsGuest: () => void;
-  logout: () => Promise<void>;
-  refreshUser: () => Promise<void>;
+interface User {
+  _id?: string
+  id?: string
+  username?: string
+  name?: string
+  email?: string
 }
 
-const AuthContext = createContext<AuthState>({
-  token: null,
-  user: null,
-  loading: true,
-  login: async () => null,
-  loginAsGuest: () => {},
-  logout: async () => {},
-  refreshUser: async () => {},
-});
+interface AuthContextType {
+  user: User | null
+  loading: boolean
+  login: (email: string, password: string) => Promise<void>
+  logout: () => Promise<void>
+  setUser: (user: User | null) => void
+}
+
+const AuthContext = createContext<AuthContextType | null>(null)
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [token, setToken] = useState<string | null>(null);
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [user, setUser] = useState<User | null>(null)
+  const [loading, setLoading] = useState(true)
 
-  // Khôi phục session khi mở app
   useEffect(() => {
-    (async () => {
+    const restore = async () => {
       try {
-        const [savedToken, savedUser] = await Promise.all([
-          AsyncStorage.getItem(TOKEN_KEY),
-          AsyncStorage.getItem(USER_KEY),
-        ]);
-        if (savedToken) setToken(savedToken);
-        if (savedUser) setUser(JSON.parse(savedUser));
-      } catch {
-        // Ignore
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, []);
-
-  const login = useCallback(async (email: string, password: string): Promise<string | null> => {
-    try {
-      const res = await loginApi(email, password);
-      if (res.statusCode !== 200 || !res.data?.accessToken) {
-        return res.message ?? 'Đăng nhập thất bại';
-      }
-
-      const { accessToken } = res.data;
-      await AsyncStorage.setItem(TOKEN_KEY, accessToken);
-      setToken(accessToken);
-
-      // Tải thông tin user hiện tại từ /users (lấy user khớp email)
-      try {
-        const usersRes = await fetch(
-          `${(await import('@/lib/api')).BASE_URL}/users`,
-          { headers: { Authorization: `Bearer ${accessToken}` } }
-        );
-        const usersJson = await usersRes.json();
-        const me: User | undefined = (usersJson.data as User[])?.find(
-          (u) => u.email === email
-        );
-        if (me) {
-          setUser(me);
-          await AsyncStorage.setItem(USER_KEY, JSON.stringify(me));
+        const [token, savedUser] = await Promise.race([
+          Promise.all([
+            AsyncStorage.getItem('token'),
+            AsyncStorage.getItem('user'),
+          ]),
+          new Promise<[null, null]>((resolve) =>
+            setTimeout(() => resolve([null, null]), 3000)
+          ),
+        ])
+        if (token && savedUser) {
+          setUser(JSON.parse(savedUser))
         }
       } catch {
-        // Không critical nếu không lấy được user
+        await AsyncStorage.removeItem('user').catch(() => {})
+      } finally {
+        setLoading(false)
       }
-
-      return null; // null = không có lỗi
-    } catch (e: any) {
-      return e?.message ?? 'Không thể kết nối đến máy chủ';
     }
-  }, []);
+    restore()
+  }, [])
 
-  const loginAsGuest = useCallback(() => {
-    const guest: User = {
-      id: 'guest',
-      username: 'guest',
-      email: 'guest@demo.com',
-      displayName: 'Khách',
-      isOnline: true,
-    };
-    setToken('guest-token');
-    setUser(guest);
-  }, []);
+  const login = async (email: string, password: string) => {
+    const res = await loginApi(email, password)
+    const { token, accessToken, user: userData } = res.data
+    const jwt = token || accessToken
+    await AsyncStorage.setItem('token', jwt)
+    await AsyncStorage.setItem('user', JSON.stringify(userData))
+    setUser(userData)
+  }
 
-  const logout = useCallback(async () => {
-    await AsyncStorage.multiRemove([TOKEN_KEY, USER_KEY]);
-    setToken(null);
-    setUser(null);
-  }, []);
-
-  const refreshUser = useCallback(async () => {
-    if (!user?.id) return;
-    try {
-      const res = await getUserApi(user.id);
-      if (res.data) {
-        setUser(res.data);
-        await AsyncStorage.setItem(USER_KEY, JSON.stringify(res.data));
-      }
-    } catch {
-      // Ignore
-    }
-  }, [user?.id]);
+  const logout = async () => {
+    await AsyncStorage.removeItem('token')
+    await AsyncStorage.removeItem('user')
+    setUser(null)
+  }
 
   return (
-    <AuthContext.Provider value={{ token, user, loading, login, loginAsGuest, logout, refreshUser }}>
+    <AuthContext.Provider value={{ user, loading, login, logout, setUser }}>
       {children}
     </AuthContext.Provider>
-  );
+  )
 }
 
-export const useAuth = () => useContext(AuthContext);
+export const useAuth = () => useContext(AuthContext)!

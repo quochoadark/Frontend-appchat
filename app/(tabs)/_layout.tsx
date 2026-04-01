@@ -1,61 +1,49 @@
-import { HapticTab } from '@/components/haptic-tab';
-import { Tabs } from 'expo-router';
-import { Text } from 'react-native';
+import { Tabs } from 'expo-router'
+import { Ionicons } from '@expo/vector-icons'
+import { Colors } from '../../constants/theme'
 
-const PRIMARY = '#0a7ea4';
-
-function TabIcon({ emoji, focused }: { emoji: string; focused: boolean }) {
-  return (
-    <Text style={{ fontSize: focused ? 26 : 22, opacity: focused ? 1 : 0.55 }}>
-      {emoji}
-    </Text>
-  );
-}
-
-export default function TabLayout() {
+export default function TabsLayout() {
   return (
     <Tabs
       screenOptions={{
-        tabBarActiveTintColor: PRIMARY,
-        tabBarInactiveTintColor: '#999',
-        tabBarButton: HapticTab,
-        tabBarStyle: {
-          backgroundColor: '#fff',
-          borderTopColor: '#e8e8e8',
-          borderTopWidth: 1,
-          height: 60,
-          paddingBottom: 8,
-        },
-        tabBarLabelStyle: {
-          fontSize: 11,
-          fontWeight: '600',
-        },
-        headerStyle: { backgroundColor: PRIMARY },
+        tabBarActiveTintColor: Colors.primary,
+        tabBarInactiveTintColor: Colors.textSecondary,
+        tabBarStyle: { borderTopColor: Colors.border },
+        headerStyle: { backgroundColor: Colors.primary },
         headerTintColor: '#fff',
-        headerTitleStyle: { fontWeight: '700', fontSize: 18 },
+        headerTitleStyle: { fontWeight: 'bold' },
       }}
     >
       <Tabs.Screen
         name="index"
         options={{
           title: 'Tin nhắn',
-          tabBarIcon: ({ focused }) => <TabIcon emoji="💬" focused={focused} />,
+          headerTitle: 'ChatApp',
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="chatbubbles-outline" size={size} color={color} />
+          ),
         }}
       />
       <Tabs.Screen
         name="contacts"
         options={{
-          title: 'Liên hệ',
-          tabBarIcon: ({ focused }) => <TabIcon emoji="👥" focused={focused} />,
+          title: 'Bạn bè',
+          headerTitle: 'Bạn bè',
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="people-outline" size={size} color={color} />
+          ),
         }}
       />
       <Tabs.Screen
         name="profile"
         options={{
-          title: 'Tôi',
-          tabBarIcon: ({ focused }) => <TabIcon emoji="👤" focused={focused} />,
+          title: 'Hồ sơ',
+          headerTitle: 'Hồ sơ',
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="person-outline" size={size} color={color} />
+          ),
         }}
       />
     </Tabs>
-  );
+  )
 }

@@ -1,271 +1,209 @@
-import { useAuth } from '@/context/AuthContext';
-import { router } from 'expo-router';
-import { useState } from 'react';
+import React, { useState } from 'react'
 import {
-  ActivityIndicator,
-  Alert,
-  KeyboardAvoidingView,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
+  View,
   Text,
   TextInput,
-  View,
-} from 'react-native';
+  TouchableOpacity,
+  StyleSheet,
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+} from 'react-native'
+import { useAuth } from '../../context/AuthContext'
+import { Colors } from '../../constants/theme'
 
 export default function LoginScreen() {
-  const { login, loginAsGuest } = useAuth();
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [showPassword, setShowPassword] = useState(false);
-  const [errors, setErrors] = useState<{ email?: string; password?: string }>({});
+  const { login } = useAuth()
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [showPwd, setShowPwd] = useState(false)
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
 
-  function validate() {
-    const e: typeof errors = {};
-    if (!email.trim()) e.email = 'Vui lòng nhập email';
-    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) e.email = 'Email không hợp lệ';
-    if (!password) e.password = 'Vui lòng nhập mật khẩu';
-    setErrors(e);
-    return Object.keys(e).length === 0;
-  }
-
-  async function handleLogin() {
-    if (!validate()) return;
-    setLoading(true);
-    const err = await login(email.trim(), password);
-    setLoading(false);
-    if (err) {
-      Alert.alert('Đăng nhập thất bại', err);
-    } else {
-      router.replace('/(tabs)/');
+  const handleLogin = async () => {
+    if (!email.trim() || !password.trim()) {
+      setError('Vui lòng nhập đầy đủ thông tin.')
+      return
+    }
+    setError('')
+    setLoading(true)
+    try {
+      await login(email.trim(), password)
+    } catch (err: any) {
+      setError(
+        err.response?.data?.message ||
+          err.response?.data?.error ||
+          'Email hoặc mật khẩu không đúng.'
+      )
+    } finally {
+      setLoading(false)
     }
   }
 
   return (
     <KeyboardAvoidingView
       style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
-      <ScrollView
-        contentContainerStyle={styles.scroll}
-        keyboardShouldPersistTaps="handled"
-      >
-        {/* Logo / Header */}
-        <View style={styles.header}>
-          <View style={styles.logoCircle}>
-            <Text style={styles.logoText}>💬</Text>
+      <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+        <View style={styles.card}>
+          <View style={styles.logoSection}>
+            <View style={styles.logoCircle}>
+              <Text style={styles.logoEmoji}>💬</Text>
+            </View>
+            <Text style={styles.appName}>ChatApp</Text>
+            <Text style={styles.appSub}>Nhắn tin thời gian thực</Text>
           </View>
-          <Text style={styles.appName}>ChatApp</Text>
-          <Text style={styles.subtitle}>Đăng nhập để tiếp tục</Text>
-        </View>
 
-        {/* Form */}
-        <View style={styles.form}>
-          {/* Email */}
-          <View style={styles.inputGroup}>
+          <View style={styles.formGroup}>
             <Text style={styles.label}>Email</Text>
             <TextInput
-              style={[styles.input, errors.email ? styles.inputError : null]}
+              style={styles.input}
               placeholder="example@email.com"
-              placeholderTextColor="#aaa"
+              placeholderTextColor={Colors.textSecondary}
+              value={email}
+              onChangeText={setEmail}
               keyboardType="email-address"
               autoCapitalize="none"
               autoCorrect={false}
-              value={email}
-              onChangeText={(v) => { setEmail(v); setErrors((p) => ({ ...p, email: undefined })); }}
-              editable={!loading}
             />
-            {errors.email ? <Text style={styles.errorText}>{errors.email}</Text> : null}
           </View>
 
-          {/* Password */}
-          <View style={styles.inputGroup}>
+          <View style={styles.formGroup}>
             <Text style={styles.label}>Mật khẩu</Text>
-            <View style={[styles.passwordRow, errors.password ? styles.inputError : null]}>
+            <View style={styles.inputWrapper}>
               <TextInput
-                style={styles.passwordInput}
+                style={[styles.input, { paddingRight: 44 }]}
                 placeholder="Nhập mật khẩu"
-                placeholderTextColor="#aaa"
-                secureTextEntry={!showPassword}
-                autoCapitalize="none"
-                autoCorrect={false}
+                placeholderTextColor={Colors.textSecondary}
                 value={password}
-                onChangeText={(v) => { setPassword(v); setErrors((p) => ({ ...p, password: undefined })); }}
-                editable={!loading}
-                onSubmitEditing={handleLogin}
+                onChangeText={setPassword}
+                secureTextEntry={!showPwd}
+                autoCapitalize="none"
               />
-              <Pressable onPress={() => setShowPassword((p) => !p)} style={styles.eyeBtn}>
-                <Text style={styles.eyeText}>{showPassword ? '🙈' : '👁️'}</Text>
-              </Pressable>
+              <TouchableOpacity
+                style={styles.togglePwd}
+                onPress={() => setShowPwd((v) => !v)}
+              >
+                <Text style={{ fontSize: 18 }}>{showPwd ? '🙈' : '👁️'}</Text>
+              </TouchableOpacity>
             </View>
-            {errors.password ? <Text style={styles.errorText}>{errors.password}</Text> : null}
           </View>
 
-          {/* Login Button */}
-          <Pressable
-            style={[styles.loginBtn, loading && styles.loginBtnDisabled]}
+          {error ? <Text style={styles.errorMsg}>{error}</Text> : null}
+
+          <TouchableOpacity
+            style={[styles.btnLogin, loading && styles.btnDisabled]}
             onPress={handleLogin}
             disabled={loading}
           >
             {loading ? (
               <ActivityIndicator color="#fff" />
             ) : (
-              <Text style={styles.loginBtnText}>Đăng nhập</Text>
+              <Text style={styles.btnLoginText}>Đăng nhập</Text>
             )}
-          </Pressable>
-
-          {/* Guest Button */}
-          <Pressable
-            style={styles.guestBtn}
-            onPress={() => { loginAsGuest(); router.replace('/(tabs)/'); }}
-          >
-            <Text style={styles.guestBtnText}>👀  Vào xem thử (không cần đăng nhập)</Text>
-          </Pressable>
+          </TouchableOpacity>
         </View>
-
-        <Text style={styles.footer}>
-          Chưa có tài khoản? Liên hệ quản trị viên.
-        </Text>
       </ScrollView>
     </KeyboardAvoidingView>
-  );
+  )
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f5f7fa',
+    backgroundColor: Colors.primary,
   },
   scroll: {
     flexGrow: 1,
     justifyContent: 'center',
     padding: 24,
   },
-  header: {
-    alignItems: 'center',
-    marginBottom: 40,
-  },
-  logoCircle: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: '#0a7ea4',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 16,
-    shadowColor: '#0a7ea4',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 6,
-  },
-  logoText: {
-    fontSize: 36,
-  },
-  appName: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: '#1a1a2e',
-    letterSpacing: 0.5,
-  },
-  subtitle: {
-    fontSize: 14,
-    color: '#666',
-    marginTop: 4,
-  },
-  form: {
+  card: {
     backgroundColor: '#fff',
     borderRadius: 16,
-    padding: 24,
+    padding: 28,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
     shadowRadius: 12,
-    elevation: 4,
-    gap: 16,
+    elevation: 8,
   },
-  inputGroup: {
-    gap: 6,
+  logoSection: {
+    alignItems: 'center',
+    marginBottom: 28,
+  },
+  logoCircle: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: Colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  logoEmoji: {
+    fontSize: 32,
+  },
+  appName: {
+    fontSize: 26,
+    fontWeight: 'bold',
+    color: Colors.text,
+    marginBottom: 4,
+  },
+  appSub: {
+    fontSize: 14,
+    color: Colors.textSecondary,
+  },
+  formGroup: {
+    marginBottom: 16,
   },
   label: {
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: '600',
-    color: '#333',
+    color: Colors.text,
+    marginBottom: 6,
   },
   input: {
     borderWidth: 1.5,
-    borderColor: '#e0e0e0',
+    borderColor: Colors.border,
     borderRadius: 10,
-    padding: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
     fontSize: 15,
-    color: '#1a1a2e',
-    backgroundColor: '#fafafa',
+    color: Colors.text,
+    backgroundColor: '#FAFAFA',
   },
-  inputError: {
-    borderColor: '#e74c3c',
+  inputWrapper: {
+    position: 'relative',
   },
-  passwordRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: 1.5,
-    borderColor: '#e0e0e0',
+  togglePwd: {
+    position: 'absolute',
+    right: 12,
+    top: 0,
+    bottom: 0,
+    justifyContent: 'center',
+  },
+  errorMsg: {
+    color: Colors.danger,
+    fontSize: 13,
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  btnLogin: {
+    backgroundColor: Colors.primary,
     borderRadius: 10,
-    backgroundColor: '#fafafa',
-  },
-  passwordInput: {
-    flex: 1,
-    padding: 12,
-    fontSize: 15,
-    color: '#1a1a2e',
-  },
-  eyeBtn: {
-    paddingHorizontal: 12,
-  },
-  eyeText: {
-    fontSize: 18,
-  },
-  errorText: {
-    fontSize: 12,
-    color: '#e74c3c',
-  },
-  loginBtn: {
-    backgroundColor: '#0a7ea4',
-    borderRadius: 10,
-    padding: 14,
+    paddingVertical: 14,
     alignItems: 'center',
     marginTop: 4,
-    shadowColor: '#0a7ea4',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.3,
-    shadowRadius: 6,
-    elevation: 4,
   },
-  loginBtnDisabled: {
-    opacity: 0.6,
+  btnDisabled: {
+    opacity: 0.7,
   },
-  loginBtnText: {
+  btnLoginText: {
     color: '#fff',
     fontSize: 16,
-    fontWeight: '700',
+    fontWeight: 'bold',
   },
-  guestBtn: {
-    borderWidth: 1.5,
-    borderColor: '#0a7ea4',
-    borderRadius: 10,
-    padding: 13,
-    alignItems: 'center',
-  },
-  guestBtnText: {
-    color: '#0a7ea4',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  footer: {
-    textAlign: 'center',
-    color: '#999',
-    fontSize: 13,
-    marginTop: 24,
-  },
-});
+})

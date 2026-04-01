@@ -1,191 +1,213 @@
-import { useAuth } from '@/context/AuthContext';
-import { useChat, type Conversation } from '@/context/ChatContext';
-import { router } from 'expo-router';
-import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useEffect, useState } from 'react'
+import {
+  View,
+  Text,
+  TextInput,
+  FlatList,
+  TouchableOpacity,
+  StyleSheet,
+  ActivityIndicator,
+} from 'react-native'
+import { useRouter } from 'expo-router'
+import { useAuth } from '../../context/AuthContext'
+import { useChat, Conversation } from '../../context/ChatContext'
+import { useSocket } from '../../context/SocketContext'
+import UserAvatar from '../../components/UserAvatar'
+import { Colors } from '../../constants/theme'
 
-const PALETTE = ['#0a7ea4', '#e74c3c', '#2ecc71', '#9b59b6', '#f39c12', '#1abc9c', '#e67e22'];
-
-function colorFor(name: string) {
-  return PALETTE[(name || '?').charCodeAt(0) % PALETTE.length];
+function formatTime(dateStr?: string) {
+  if (!dateStr) return ''
+  const date = new Date(dateStr)
+  const now = new Date()
+  const diffDays = Math.floor((now.getTime() - date.getTime()) / 86400000)
+  if (diffDays === 0) {
+    return date.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
+  }
+  if (diffDays === 1) return 'Hôm qua'
+  if (diffDays < 7) {
+    const days = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7']
+    return days[date.getDay()]
+  }
+  return date.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' })
 }
 
-/** Avatar đơn (direct chat) */
-function SingleAvatar({ name, size = 48 }: { name: string; size?: number }) {
-  return (
-    <View style={[styles.avatar, { width: size, height: size, borderRadius: size / 2, backgroundColor: colorFor(name) }]}>
-      <Text style={[styles.avatarText, { fontSize: size * 0.35 }]}>
-        {(name || '?').slice(0, 2).toUpperCase()}
-      </Text>
-    </View>
-  );
+function getConvName(conv: Conversation, currentUser: any) {
+  if (conv.name) return conv.name
+  const other = (conv.participants || []).find(
+    (p) => String(p._id || p.id) !== String(currentUser._id || currentUser.id)
+  )
+  return other?.name || other?.username || other?.email || 'Unknown'
 }
 
-/** Avatar ghép (group chat) – hiển thị 2 avatar nhỏ chồng nhau */
-function GroupAvatar({ names, size = 48 }: { names: string[]; size?: number }) {
-  const small = size * 0.62;
-  const [a, b] = names;
-  return (
-    <View style={{ width: size, height: size, position: 'relative' }}>
-      <View style={[styles.avatar, {
-        width: small, height: small, borderRadius: small / 2,
-        backgroundColor: colorFor(a ?? ''),
-        position: 'absolute', top: 0, left: 0,
-        borderWidth: 1.5, borderColor: '#fff',
-      }]}>
-        <Text style={{ color: '#fff', fontWeight: '700', fontSize: small * 0.38 }}>
-          {(a || '?').slice(0, 1).toUpperCase()}
-        </Text>
-      </View>
-      <View style={[styles.avatar, {
-        width: small, height: small, borderRadius: small / 2,
-        backgroundColor: colorFor(b ?? 'Z'),
-        position: 'absolute', bottom: 0, right: 0,
-        borderWidth: 1.5, borderColor: '#fff',
-      }]}>
-        <Text style={{ color: '#fff', fontWeight: '700', fontSize: small * 0.38 }}>
-          {(b || '?').slice(0, 1).toUpperCase()}
-        </Text>
-      </View>
-    </View>
-  );
+function getLastMsgText(conv: Conversation) {
+  const msg = conv.lastMessage
+  if (!msg) return 'Bắt đầu cuộc trò chuyện'
+  if (msg.type === 'IMAGE') return '📷 Ảnh'
+  if (msg.type === 'FILE') return '📎 Tệp'
+  return msg.content || ''
 }
 
-function formatTime(date: Date) {
-  const now = new Date();
-  const diff = now.getTime() - date.getTime();
-  if (diff < 60000) return 'vừa xong';
-  if (diff < 3600000) return `${Math.floor(diff / 60000)} phút`;
-  if (diff < 86400000) return date.toLocaleTimeString('vi', { hour: '2-digit', minute: '2-digit' });
-  return date.toLocaleDateString('vi', { day: '2-digit', month: '2-digit' });
-}
+export default function ConversationsScreen() {
+  const { user } = useAuth()
+  const { conversations, loadConversations, loadUsers, openConversation, loadingConvs } = useChat()
+  const { isOnline } = useSocket()
+  const router = useRouter()
+  const [search, setSearch] = useState('')
 
-function ConvRow({ item, myId }: { item: Conversation; myId: string }) {
-  const isDirect = item.type === 'DIRECT';
+  useEffect(() => {
+    loadConversations()
+    loadUsers()
+  }, [])
 
-  const title = isDirect
-    ? (item.partner?.displayName || item.partner?.username || '')
-    : (item.groupName ?? 'Nhóm chat');
+  const filtered = conversations.filter((c) => {
+    const name = getConvName(c, user).toLowerCase()
+    return name.includes(search.toLowerCase())
+  })
 
-  const memberNames = isDirect
-    ? []
-    : (item.members ?? []).map((m) => m.displayName || m.username || '');
-
-  const isOnline = isDirect ? !!item.partner?.isOnline : false;
-
-  const lastSenderMe = item.lastMessage?.senderId === myId;
-  const lastSenderName = isDirect
-    ? (lastSenderMe ? 'Bạn' : '')
-    : (lastSenderMe ? 'Bạn' : item.lastMessage?.senderName?.split(' ').pop() ?? '');
-
-  const preview = item.lastMessage
-    ? `${lastSenderName ? lastSenderName + ': ' : ''}${item.lastMessage.content}`
-    : 'Bắt đầu cuộc trò chuyện';
-
-  function open() {
+  const handleOpen = async (conv: Conversation) => {
+    openConversation(conv)
+    const other = (conv.participants || []).find(
+      (p) => String(p._id || p.id) !== String(user?._id || user?.id)
+    )
+    const partnerName = getConvName(conv, user)
+    const partnerId = String(other?._id || other?.id || '')
     router.push({
       pathname: '/chat/[id]',
-      params: { id: item.id, name: title, isGroup: isDirect ? '0' : '1' },
-    });
+      params: { id: String(conv._id || conv.id), partnerName, partnerId },
+    })
+  }
+
+  const renderItem = ({ item: conv }: { item: Conversation }) => {
+    const name = getConvName(conv, user)
+    const other = (conv.participants || []).find(
+      (p) => String(p._id || p.id) !== String(user?._id || user?.id)
+    )
+    const otherId = String(other?._id || other?.id || '')
+    const online = otherId ? isOnline(otherId) : false
+
+    return (
+      <TouchableOpacity style={styles.convItem} onPress={() => handleOpen(conv)} activeOpacity={0.7}>
+        <UserAvatar name={name} size="md" online={online} />
+        <View style={styles.convInfo}>
+          <View style={styles.convTop}>
+            <Text style={styles.convName} numberOfLines={1}>{name}</Text>
+            <Text style={styles.convTime}>
+              {formatTime(conv.updatedAt || conv.lastMessage?.createdAt)}
+            </Text>
+          </View>
+          <View style={styles.convBottom}>
+            <Text style={styles.convLast} numberOfLines={1}>
+              {getLastMsgText(conv)}
+            </Text>
+            {(conv.unreadCount || 0) > 0 && (
+              <View style={styles.badge}>
+                <Text style={styles.badgeText}>{conv.unreadCount}</Text>
+              </View>
+            )}
+          </View>
+        </View>
+      </TouchableOpacity>
+    )
   }
 
   return (
-    <Pressable style={({ pressed }) => [styles.row, pressed && styles.rowPressed]} onPress={open}>
-      {/* Avatar */}
-      <View style={styles.avatarWrap}>
-        {isDirect ? (
-          <>
-            <SingleAvatar name={title} />
-            {isOnline && <View style={styles.onlineDot} />}
-          </>
-        ) : (
-          <GroupAvatar names={memberNames} />
+    <View style={styles.container}>
+      <View style={styles.searchBar}>
+        <Text style={styles.searchIcon}>🔍</Text>
+        <TextInput
+          style={styles.searchInput}
+          placeholder="Tìm kiếm..."
+          placeholderTextColor={Colors.textSecondary}
+          value={search}
+          onChangeText={setSearch}
+        />
+        {search.length > 0 && (
+          <TouchableOpacity onPress={() => setSearch('')}>
+            <Text style={{ color: Colors.textSecondary, fontSize: 16, paddingHorizontal: 8 }}>✕</Text>
+          </TouchableOpacity>
         )}
       </View>
 
-      {/* Info */}
-      <View style={styles.info}>
-        <View style={styles.topRow}>
-          <View style={styles.titleRow}>
-            {!isDirect && <Text style={styles.groupTag}>👥 </Text>}
-            <Text style={styles.name} numberOfLines={1}>{title}</Text>
-          </View>
-          {item.lastMessage && (
-            <Text style={styles.time}>{formatTime(item.lastMessage.sentAt)}</Text>
-          )}
+      {loadingConvs ? (
+        <View style={styles.center}>
+          <ActivityIndicator size="large" color={Colors.primary} />
         </View>
-        <View style={styles.bottomRow}>
-          <Text style={[styles.preview, item.unread > 0 && styles.previewBold]} numberOfLines={1}>
-            {preview}
-          </Text>
-          {item.unread > 0 && (
-            <View style={styles.badge}>
-              <Text style={styles.badgeText}>{item.unread > 99 ? '99+' : item.unread}</Text>
-            </View>
-          )}
+      ) : filtered.length === 0 ? (
+        <View style={styles.center}>
+          <Text style={{ fontSize: 40, marginBottom: 12 }}>💬</Text>
+          <Text style={styles.emptyText}>Chưa có cuộc trò chuyện nào</Text>
         </View>
-      </View>
-    </Pressable>
-  );
-}
-
-export default function ChatsScreen() {
-  const { user } = useAuth();
-  const { conversations } = useChat();
-
-  const convList = Array.from(conversations.values()).sort(
-    (a, b) => (b.lastMessage?.sentAt.getTime() ?? 0) - (a.lastMessage?.sentAt.getTime() ?? 0)
-  );
-
-  if (convList.length === 0) {
-    return (
-      <View style={styles.empty}>
-        <Text style={styles.emptyEmoji}>💬</Text>
-        <Text style={styles.emptyTitle}>Chưa có tin nhắn nào</Text>
-        <Text style={styles.emptySubtitle}>Vào tab Liên hệ để bắt đầu trò chuyện</Text>
-      </View>
-    );
-  }
-
-  return (
-    <FlatList
-      data={convList}
-      keyExtractor={(item) => item.id}
-      style={styles.list}
-      ItemSeparatorComponent={() => <View style={styles.separator} />}
-      renderItem={({ item }) => <ConvRow item={item} myId={user?.id ?? ''} />}
-    />
-  );
+      ) : (
+        <FlatList
+          data={filtered}
+          keyExtractor={(item) => String(item._id || item.id)}
+          renderItem={renderItem}
+          ItemSeparatorComponent={() => <View style={styles.separator} />}
+        />
+      )}
+    </View>
+  )
 }
 
 const styles = StyleSheet.create({
-  list: { flex: 1, backgroundColor: '#fff' },
-  separator: { height: 1, backgroundColor: '#f0f0f0', marginLeft: 76 },
-  row: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12, backgroundColor: '#fff' },
-  rowPressed: { backgroundColor: '#f5f5f5' },
-  avatarWrap: { position: 'relative', marginRight: 12, width: 48, height: 48 },
-  avatar: { justifyContent: 'center', alignItems: 'center' },
-  avatarText: { color: '#fff', fontWeight: '700' },
-  onlineDot: {
-    position: 'absolute', bottom: 2, right: 2,
-    width: 12, height: 12, borderRadius: 6,
-    backgroundColor: '#2ecc71', borderWidth: 2, borderColor: '#fff',
+  container: { flex: 1, backgroundColor: Colors.surface },
+  searchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Colors.inputBg,
+    margin: 10,
+    borderRadius: 20,
+    paddingHorizontal: 12,
   },
-  info: { flex: 1 },
-  topRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 3 },
-  titleRow: { flexDirection: 'row', alignItems: 'center', flex: 1 },
-  groupTag: { fontSize: 13 },
-  name: { fontSize: 15, fontWeight: '600', color: '#1a1a2e', flex: 1 },
-  time: { fontSize: 12, color: '#999', marginLeft: 8 },
-  bottomRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  preview: { fontSize: 13, color: '#888', flex: 1 },
-  previewBold: { color: '#333', fontWeight: '600' },
+  searchIcon: { fontSize: 16, marginRight: 6 },
+  searchInput: {
+    flex: 1,
+    paddingVertical: 9,
+    fontSize: 15,
+    color: Colors.text,
+  },
+  center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  emptyText: { color: Colors.textSecondary, fontSize: 15 },
+  convItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  convInfo: { flex: 1, marginLeft: 12 },
+  convTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  convName: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: '600',
+    color: Colors.text,
+    marginRight: 8,
+  },
+  convTime: { fontSize: 12, color: Colors.textSecondary },
+  convBottom: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  convLast: {
+    flex: 1,
+    fontSize: 14,
+    color: Colors.textSecondary,
+    marginRight: 8,
+  },
   badge: {
-    backgroundColor: '#0a7ea4', borderRadius: 10, minWidth: 20, height: 20,
-    justifyContent: 'center', alignItems: 'center', paddingHorizontal: 5, marginLeft: 8,
+    backgroundColor: Colors.primary,
+    borderRadius: 10,
+    minWidth: 20,
+    height: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 5,
   },
-  badgeText: { color: '#fff', fontSize: 11, fontWeight: '700' },
-  empty: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#fff', padding: 32 },
-  emptyEmoji: { fontSize: 56, marginBottom: 16 },
-  emptyTitle: { fontSize: 18, fontWeight: '700', color: '#1a1a2e', marginBottom: 8 },
-  emptySubtitle: { fontSize: 14, color: '#888', textAlign: 'center' },
-});
+  badgeText: { color: '#fff', fontSize: 12, fontWeight: 'bold' },
+  separator: { height: 1, backgroundColor: Colors.border, marginLeft: 76 },
+})
