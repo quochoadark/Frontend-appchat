@@ -18,7 +18,7 @@ import UserAvatar from '../../components/UserAvatar'
 import { Colors } from '../../constants/theme'
 import { useAuth } from '../../context/AuthContext'
 import { Message, useChat } from '../../context/ChatContext'
-import { useSocket } from '../../context/SocketContext'
+import { ChatNotification, useSocket } from '../../context/SocketContext'
 
 const EMOJIS = [
   '😀', '😂', '😍', '🥰', '😎', '😭', '😡', '🥳',
@@ -42,7 +42,11 @@ function formatDateLabel(dateStr?: string) {
   const diffDays = Math.floor((now.getTime() - date.getTime()) / 86400000)
   if (diffDays === 0) return 'Hôm nay'
   if (diffDays === 1) return 'Hôm qua'
-  return date.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' })
+  return date.toLocaleDateString('vi-VN', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  })
 }
 
 function isSameDay(a?: string, b?: string) {
@@ -64,55 +68,95 @@ export default function ChatScreen() {
   }>()
   const router = useRouter()
   const { user } = useAuth()
-  const { conversations, messages, loadingMsgs, sendMessage, receiveMessage, openConversation } =
-    useChat()
-  const { onMessage, emitTyping, emitStopTyping, joinRoom, isOnline, typingUsers } = useSocket()
+  const {
+    conversations,
+    messages,
+    loadingMsgs,
+    receiveMessage,
+    openConversation,
+  } = useChat()
+  const { subscribeConversation, sendChatMessage, sendTyping, sendRead, isOnline } =
+    useSocket()
 
   const [text, setText] = useState('')
   const [showEmoji, setShowEmoji] = useState(false)
+  const [typingVisible, setTypingVisible] = useState(false)
   const flatListRef = useRef<FlatList>(null)
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const typingHideRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const name = partnerName || 'Unknown'
   const online = partnerId ? isOnline(partnerId) : false
-  const isTyping = id ? !!typingUsers[id] : false
+  const myId = String(user?.id || user?._id || '')
 
-  // Open conversation on mount if not already active
+  // Open conversation on mount if not already loaded
   useEffect(() => {
     if (!id) return
-    const conv = conversations.find((c) => (c._id || c.id) === id)
+    const conv = conversations.find((c) => String(c.id || c._id) === id)
     if (conv) openConversation(conv)
   }, [id])
 
-  // Join socket room and listen for messages
+  // Subscribe to STOMP conversation topic
   useEffect(() => {
     if (!id) return
-    joinRoom(id)
-    const off = onMessage((msg: any) => receiveMessage(msg))
-    return off
-  }, [id])
 
-  // Scroll to bottom when messages change
+    const unsubscribe = subscribeConversation(id, (n: ChatNotification) => {
+      if (n.type === 'NEW_MESSAGE' && n.data) {
+        // Map the Message data from the notification
+        const msg: Message = {
+          id: n.data.id,
+          conversationId: n.data.conversationId || id,
+          senderId: n.data.senderId,
+          senderDisplayName: n.data.senderDisplayName,
+          messageType: n.data.messageType,
+          content: n.data.content,
+          media: n.data.media,
+          replyToMessageId: n.data.replyToMessageId,
+          readBy: n.data.readBy,
+          deleted: n.data.deleted,
+          createdAt: n.data.createdAt,
+        }
+        receiveMessage(msg)
+        // Send read receipt automatically
+        sendRead(id)
+      } else if (n.type === 'TYPING' && n.data?.senderId !== myId) {
+        setTypingVisible(true)
+        if (typingHideRef.current) clearTimeout(typingHideRef.current)
+        typingHideRef.current = setTimeout(() => setTypingVisible(false), 3000)
+      } else if (n.type === 'READ_RECEIPT') {
+        // Could update read indicators here if needed
+      }
+    })
+
+    return () => {
+      unsubscribe()
+      if (typingHideRef.current) clearTimeout(typingHideRef.current)
+    }
+  }, [id, myId])
+
+  // Scroll to bottom when new messages arrive
   useEffect(() => {
     if (messages.length > 0) {
       setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100)
     }
   }, [messages.length])
 
-  const handleSend = useCallback(async () => {
-    if (!text.trim()) return
+  const handleSend = useCallback(() => {
+    if (!text.trim() || !id) return
     const content = text.trim()
     setText('')
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current)
-    emitStopTyping(id)
-    await sendMessage(content)
-  }, [text, id, sendMessage, emitStopTyping])
+    sendChatMessage({ conversationId: id, content, messageType: 'TEXT' })
+  }, [text, id, sendChatMessage])
 
   const handleTextChange = (val: string) => {
     setText(val)
-    emitTyping(id)
+    if (!id) return
+    sendTyping(id)
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current)
-    typingTimeoutRef.current = setTimeout(() => emitStopTyping(id), 2000)
+    typingTimeoutRef.current = setTimeout(() => {
+      // Backend doesn't have a stop_typing, just let it expire after 3s
+    }, 2000)
   }
 
   const handleEmojiPress = (emoji: string) => {
@@ -120,11 +164,20 @@ export default function ChatScreen() {
     setShowEmoji(false)
   }
 
-  const renderMessage = ({ item: msg, index }: { item: Message; index: number }) => {
-    const senderId = msg.sender?._id || msg.sender?.id || msg.senderId
-    const isOut = String(senderId) === String(user?._id || user?.id)
+  const renderMessage = ({
+    item: msg,
+    index,
+  }: {
+    item: Message
+    index: number
+  }) => {
+    const isOut = String(msg.senderId) === myId
     const prevMsg = messages[index - 1]
     const showDate = !prevMsg || !isSameDay(prevMsg.createdAt, msg.createdAt)
+    const showAvatar = !isOut && (
+      index === messages.length - 1 ||
+      messages[index + 1]?.senderId !== msg.senderId
+    )
 
     return (
       <View>
@@ -134,11 +187,21 @@ export default function ChatScreen() {
           </View>
         )}
         <View style={[styles.msgWrapper, isOut && styles.msgWrapperOut]}>
-          {!isOut && (
-            <UserAvatar name={msg.sender?.name || msg.sender?.username || 'U'} size="sm" />
-          )}
+          {!isOut ? (
+            showAvatar ? (
+              <UserAvatar name={msg.senderDisplayName || '?'} size="sm" />
+            ) : (
+              <View style={{ width: 32 }} />
+            )
+          ) : null}
           <View style={[styles.bubble, isOut ? styles.bubbleOut : styles.bubbleIn]}>
-            <Text style={styles.bubbleText}>{msg.content}</Text>
+            {msg.messageType === 'IMAGE' && msg.media?.url ? (
+              <Text style={styles.mediaLabel}>📷 {msg.media.fileName || 'Ảnh'}</Text>
+            ) : msg.messageType === 'FILE' && msg.media?.url ? (
+              <Text style={styles.mediaLabel}>📎 {msg.media.fileName || 'Tệp'}</Text>
+            ) : (
+              <Text style={styles.bubbleText}>{msg.content}</Text>
+            )}
             <View style={styles.bubbleFooter}>
               <Text style={styles.bubbleTime}>{formatTime(msg.createdAt)}</Text>
               {isOut && <Text style={styles.bubbleTick}>✓✓</Text>}
@@ -160,7 +223,7 @@ export default function ChatScreen() {
         <View style={styles.headerInfo}>
           <Text style={styles.headerName} numberOfLines={1}>{name}</Text>
           <Text style={styles.headerStatus}>
-            {isTyping ? 'Đang gõ...' : online ? 'Đang hoạt động' : 'Ngoại tuyến'}
+            {typingVisible ? 'Đang gõ...' : online ? 'Đang hoạt động' : 'Ngoại tuyến'}
           </Text>
         </View>
       </View>
@@ -180,14 +243,18 @@ export default function ChatScreen() {
             <FlatList
               ref={flatListRef}
               data={messages}
-              keyExtractor={(item, index) => String(item._id || item.id || index)}
+              keyExtractor={(item, index) => String(item.id || index)}
               renderItem={renderMessage}
               contentContainerStyle={styles.messagesList}
-              onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: false })}
+              onContentSizeChange={() =>
+                flatListRef.current?.scrollToEnd({ animated: false })
+              }
             />
           )}
-          {isTyping && (
-            <View style={[styles.msgWrapper]}>
+
+          {/* Typing indicator */}
+          {typingVisible && (
+            <View style={styles.msgWrapper}>
               <UserAvatar name={name} size="sm" />
               <View style={[styles.bubble, styles.bubbleIn, styles.typingBubble]}>
                 <Text style={styles.typingText}>Đang gõ...</Text>
@@ -196,7 +263,7 @@ export default function ChatScreen() {
           )}
         </View>
 
-        {/* Emoji Picker Modal */}
+        {/* Emoji Picker */}
         <Modal
           visible={showEmoji}
           transparent
@@ -271,10 +338,8 @@ const styles = StyleSheet.create({
   messagesArea: { flex: 1, backgroundColor: Colors.background },
   messagesList: { padding: 10, paddingBottom: 4 },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  dateDivider: {
-    alignItems: 'center',
-    marginVertical: 10,
-  },
+
+  dateDivider: { alignItems: 'center', marginVertical: 10 },
   dateDividerText: {
     backgroundColor: 'rgba(0,0,0,0.15)',
     color: '#fff',
@@ -283,6 +348,7 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
     borderRadius: 10,
   },
+
   msgWrapper: {
     flexDirection: 'row',
     alignItems: 'flex-end',
@@ -306,11 +372,9 @@ const styles = StyleSheet.create({
     shadowRadius: 2,
     elevation: 1,
   },
-  bubbleOut: {
-    backgroundColor: Colors.bubbleOut,
-    borderBottomRightRadius: 4,
-  },
+  bubbleOut: { backgroundColor: Colors.bubbleOut, borderBottomRightRadius: 4 },
   bubbleText: { fontSize: 15, color: Colors.text, lineHeight: 20 },
+  mediaLabel: { fontSize: 14, color: Colors.primary, fontStyle: 'italic' },
   bubbleFooter: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
@@ -321,6 +385,7 @@ const styles = StyleSheet.create({
   bubbleTick: { fontSize: 11, color: Colors.primary, marginLeft: 4 },
   typingBubble: { paddingVertical: 10 },
   typingText: { color: Colors.textSecondary, fontSize: 14, fontStyle: 'italic' },
+
   emojiOverlay: {
     flex: 1,
     justifyContent: 'flex-end',
@@ -339,6 +404,7 @@ const styles = StyleSheet.create({
   },
   emojiBtn: { padding: 8 },
   emojiText: { fontSize: 26 },
+
   inputArea: {
     flexDirection: 'row',
     alignItems: 'flex-end',

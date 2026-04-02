@@ -13,12 +13,27 @@ import {
 import { useAuth } from '../../context/AuthContext'
 import { Colors } from '../../constants/theme'
 
+type Tab = 'login' | 'register'
+
 export default function LoginScreen() {
-  const { login } = useAuth()
+  const { login, register } = useAuth()
+  const [tab, setTab] = useState<Tab>('login')
+
+  // Login fields
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+
+  // Register fields
+  const [regUsername, setRegUsername] = useState('')
+  const [regEmail, setRegEmail] = useState('')
+  const [regDisplayName, setRegDisplayName] = useState('')
+  const [regPassword, setRegPassword] = useState('')
+  const [regConfirmPassword, setRegConfirmPassword] = useState('')
+
   const [showPwd, setShowPwd] = useState(false)
+  const [showRegPwd, setShowRegPwd] = useState(false)
   const [error, setError] = useState('')
+  const [successMsg, setSuccessMsg] = useState('')
   const [loading, setLoading] = useState(false)
 
   const handleLogin = async () => {
@@ -27,6 +42,7 @@ export default function LoginScreen() {
       return
     }
     setError('')
+    setSuccessMsg('')
     setLoading(true)
     try {
       await login(email.trim(), password)
@@ -41,13 +57,66 @@ export default function LoginScreen() {
     }
   }
 
+  const handleRegister = async () => {
+    if (
+      !regUsername.trim() ||
+      !regEmail.trim() ||
+      !regDisplayName.trim() ||
+      !regPassword.trim()
+    ) {
+      setError('Vui lòng nhập đầy đủ thông tin.')
+      return
+    }
+    if (regPassword !== regConfirmPassword) {
+      setError('Mật khẩu xác nhận không khớp.')
+      return
+    }
+    if (regPassword.length < 6) {
+      setError('Mật khẩu phải có ít nhất 6 ký tự.')
+      return
+    }
+    setError('')
+    setSuccessMsg('')
+    setLoading(true)
+    try {
+      await register({
+        username: regUsername.trim(),
+        email: regEmail.trim(),
+        password: regPassword,
+        displayName: regDisplayName.trim(),
+      })
+      setSuccessMsg('Đăng ký thành công! Vui lòng đăng nhập.')
+      // Switch to login tab and pre-fill email
+      setEmail(regEmail.trim())
+      setPassword('')
+      setTab('login')
+      setRegUsername('')
+      setRegEmail('')
+      setRegDisplayName('')
+      setRegPassword('')
+      setRegConfirmPassword('')
+    } catch (err: any) {
+      setError(
+        err.response?.data?.message ||
+          err.response?.data?.error ||
+          'Đăng ký thất bại. Vui lòng thử lại.'
+      )
+    } finally {
+      setLoading(false)
+    }
+  }
+
   return (
     <KeyboardAvoidingView
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
-      <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+      <ScrollView
+        contentContainerStyle={styles.scroll}
+        keyboardShouldPersistTaps="handled"
+      >
         <View style={styles.card}>
+          {/* Logo */}
           <View style={styles.logoSection}>
             <View style={styles.logoCircle}>
               <Text style={styles.logoEmoji}>💬</Text>
@@ -56,54 +125,170 @@ export default function LoginScreen() {
             <Text style={styles.appSub}>Nhắn tin thời gian thực</Text>
           </View>
 
-          <View style={styles.formGroup}>
-            <Text style={styles.label}>Email</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="example@email.com"
-              placeholderTextColor={Colors.textSecondary}
-              value={email}
-              onChangeText={setEmail}
-              keyboardType="email-address"
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
+          {/* Tab Toggle */}
+          <View style={styles.tabRow}>
+            <TouchableOpacity
+              style={[styles.tabBtn, tab === 'login' && styles.tabBtnActive]}
+              onPress={() => { setTab('login'); setError(''); setSuccessMsg('') }}
+            >
+              <Text style={[styles.tabText, tab === 'login' && styles.tabTextActive]}>
+                Đăng nhập
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.tabBtn, tab === 'register' && styles.tabBtnActive]}
+              onPress={() => { setTab('register'); setError(''); setSuccessMsg('') }}
+            >
+              <Text style={[styles.tabText, tab === 'register' && styles.tabTextActive]}>
+                Đăng ký
+              </Text>
+            </TouchableOpacity>
           </View>
 
-          <View style={styles.formGroup}>
-            <Text style={styles.label}>Mật khẩu</Text>
-            <View style={styles.inputWrapper}>
-              <TextInput
-                style={[styles.input, { paddingRight: 44 }]}
-                placeholder="Nhập mật khẩu"
-                placeholderTextColor={Colors.textSecondary}
-                value={password}
-                onChangeText={setPassword}
-                secureTextEntry={!showPwd}
-                autoCapitalize="none"
-              />
-              <TouchableOpacity
-                style={styles.togglePwd}
-                onPress={() => setShowPwd((v) => !v)}
-              >
-                <Text style={{ fontSize: 18 }}>{showPwd ? '🙈' : '👁️'}</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-
+          {successMsg ? <Text style={styles.successMsg}>{successMsg}</Text> : null}
           {error ? <Text style={styles.errorMsg}>{error}</Text> : null}
 
-          <TouchableOpacity
-            style={[styles.btnLogin, loading && styles.btnDisabled]}
-            onPress={handleLogin}
-            disabled={loading}
-          >
-            {loading ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <Text style={styles.btnLoginText}>Đăng nhập</Text>
-            )}
-          </TouchableOpacity>
+          {/* ── Login Form ── */}
+          {tab === 'login' && (
+            <>
+              <View style={styles.formGroup}>
+                <Text style={styles.label}>Email</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="example@email.com"
+                  placeholderTextColor={Colors.textSecondary}
+                  value={email}
+                  onChangeText={setEmail}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+              </View>
+
+              <View style={styles.formGroup}>
+                <Text style={styles.label}>Mật khẩu</Text>
+                <View style={styles.inputWrapper}>
+                  <TextInput
+                    style={[styles.input, { paddingRight: 44 }]}
+                    placeholder="Nhập mật khẩu"
+                    placeholderTextColor={Colors.textSecondary}
+                    value={password}
+                    onChangeText={setPassword}
+                    secureTextEntry={!showPwd}
+                    autoCapitalize="none"
+                  />
+                  <TouchableOpacity
+                    style={styles.togglePwd}
+                    onPress={() => setShowPwd((v) => !v)}
+                  >
+                    <Text style={{ fontSize: 18 }}>{showPwd ? '🙈' : '👁️'}</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              <TouchableOpacity
+                style={[styles.btnPrimary, loading && styles.btnDisabled]}
+                onPress={handleLogin}
+                disabled={loading}
+              >
+                {loading ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={styles.btnPrimaryText}>Đăng nhập</Text>
+                )}
+              </TouchableOpacity>
+            </>
+          )}
+
+          {/* ── Register Form ── */}
+          {tab === 'register' && (
+            <>
+              <View style={styles.formGroup}>
+                <Text style={styles.label}>Tên hiển thị</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Nguyễn Văn A"
+                  placeholderTextColor={Colors.textSecondary}
+                  value={regDisplayName}
+                  onChangeText={setRegDisplayName}
+                  autoCapitalize="words"
+                />
+              </View>
+
+              <View style={styles.formGroup}>
+                <Text style={styles.label}>Tên người dùng</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="nguyen_van_a"
+                  placeholderTextColor={Colors.textSecondary}
+                  value={regUsername}
+                  onChangeText={setRegUsername}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+              </View>
+
+              <View style={styles.formGroup}>
+                <Text style={styles.label}>Email</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="example@email.com"
+                  placeholderTextColor={Colors.textSecondary}
+                  value={regEmail}
+                  onChangeText={setRegEmail}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+              </View>
+
+              <View style={styles.formGroup}>
+                <Text style={styles.label}>Mật khẩu</Text>
+                <View style={styles.inputWrapper}>
+                  <TextInput
+                    style={[styles.input, { paddingRight: 44 }]}
+                    placeholder="Tối thiểu 6 ký tự"
+                    placeholderTextColor={Colors.textSecondary}
+                    value={regPassword}
+                    onChangeText={setRegPassword}
+                    secureTextEntry={!showRegPwd}
+                    autoCapitalize="none"
+                  />
+                  <TouchableOpacity
+                    style={styles.togglePwd}
+                    onPress={() => setShowRegPwd((v) => !v)}
+                  >
+                    <Text style={{ fontSize: 18 }}>{showRegPwd ? '🙈' : '👁️'}</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              <View style={styles.formGroup}>
+                <Text style={styles.label}>Xác nhận mật khẩu</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Nhập lại mật khẩu"
+                  placeholderTextColor={Colors.textSecondary}
+                  value={regConfirmPassword}
+                  onChangeText={setRegConfirmPassword}
+                  secureTextEntry
+                  autoCapitalize="none"
+                />
+              </View>
+
+              <TouchableOpacity
+                style={[styles.btnPrimary, loading && styles.btnDisabled]}
+                onPress={handleRegister}
+                disabled={loading}
+              >
+                {loading ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={styles.btnPrimaryText}>Tạo tài khoản</Text>
+                )}
+              </TouchableOpacity>
+            </>
+          )}
         </View>
       </ScrollView>
     </KeyboardAvoidingView>
@@ -132,7 +317,7 @@ const styles = StyleSheet.create({
   },
   logoSection: {
     alignItems: 'center',
-    marginBottom: 28,
+    marginBottom: 24,
   },
   logoCircle: {
     width: 72,
@@ -143,22 +328,52 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 12,
   },
-  logoEmoji: {
-    fontSize: 32,
-  },
+  logoEmoji: { fontSize: 32 },
   appName: {
     fontSize: 26,
     fontWeight: 'bold',
     color: Colors.text,
     marginBottom: 4,
   },
-  appSub: {
+  appSub: { fontSize: 14, color: Colors.textSecondary },
+
+  tabRow: {
+    flexDirection: 'row',
+    backgroundColor: Colors.inputBg,
+    borderRadius: 10,
+    marginBottom: 20,
+    padding: 4,
+  },
+  tabBtn: {
+    flex: 1,
+    paddingVertical: 9,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  tabBtnActive: {
+    backgroundColor: Colors.primary,
+  },
+  tabText: {
     fontSize: 14,
+    fontWeight: '600',
     color: Colors.textSecondary,
   },
-  formGroup: {
-    marginBottom: 16,
+  tabTextActive: { color: '#fff' },
+
+  successMsg: {
+    color: Colors.primaryLight,
+    fontSize: 13,
+    marginBottom: 12,
+    textAlign: 'center',
+    fontWeight: '500',
   },
+  errorMsg: {
+    color: Colors.danger,
+    fontSize: 13,
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  formGroup: { marginBottom: 14 },
   label: {
     fontSize: 14,
     fontWeight: '600',
@@ -175,9 +390,7 @@ const styles = StyleSheet.create({
     color: Colors.text,
     backgroundColor: '#FAFAFA',
   },
-  inputWrapper: {
-    position: 'relative',
-  },
+  inputWrapper: { position: 'relative' },
   togglePwd: {
     position: 'absolute',
     right: 12,
@@ -185,25 +398,13 @@ const styles = StyleSheet.create({
     bottom: 0,
     justifyContent: 'center',
   },
-  errorMsg: {
-    color: Colors.danger,
-    fontSize: 13,
-    marginBottom: 12,
-    textAlign: 'center',
-  },
-  btnLogin: {
+  btnPrimary: {
     backgroundColor: Colors.primary,
     borderRadius: 10,
     paddingVertical: 14,
     alignItems: 'center',
-    marginTop: 4,
+    marginTop: 6,
   },
-  btnDisabled: {
-    opacity: 0.7,
-  },
-  btnLoginText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: 'bold',
-  },
+  btnDisabled: { opacity: 0.7 },
+  btnPrimaryText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
 })

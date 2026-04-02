@@ -2,47 +2,77 @@ import React, { createContext, useContext, useState, useCallback } from 'react'
 import {
   getConversationsApi,
   getMessagesApi,
-  sendMessageApi,
-  createConversationApi,
+  createDirectConversationApi,
   getUsersApi,
+  markAsReadApi,
+  unwrap,
 } from '../lib/api'
+import { User } from './AuthContext'
 
-export interface Message {
-  _id?: string
-  id?: string
-  content: string
-  sender?: { _id?: string; id?: string; username?: string; name?: string }
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface LastMessage {
+  messageId?: string
   senderId?: string
-  conversationId?: string
-  createdAt: string
-  type?: string
+  senderDisplayName?: string
+  contentPreview?: string
+  messageType?: string
+  sentAt?: string
 }
 
 export interface Conversation {
-  _id?: string
   id?: string
-  name?: string
-  participants?: any[]
-  lastMessage?: Message
-  unreadCount?: number
+  _id?: string
+  type?: string        // "DIRECT" | "GROUP"
+  participants?: string[]  // user IDs
+  name?: string        // GROUP only
+  avatarUrl?: string
+  description?: string
+  adminIds?: string[]
+  lastMessage?: LastMessage
+  active?: boolean
+  createdAt?: string
   updatedAt?: string
-  type?: string
+  // local-only
+  unreadCount?: number
+}
+
+export interface Message {
+  id?: string
+  _id?: string
+  conversationId?: string
+  senderId?: string
+  senderDisplayName?: string
+  messageType?: string   // "TEXT" | "IMAGE" | "FILE" | "SYSTEM"
+  content?: string
+  media?: {
+    url?: string
+    fileName?: string
+    fileSize?: number
+    mimeType?: string
+    thumbnailUrl?: string
+  }
+  replyToMessageId?: string
+  readBy?: Record<string, string>
+  deleted?: boolean
+  createdAt?: string
 }
 
 interface ChatContextType {
   conversations: Conversation[]
   activeConv: Conversation | null
   messages: Message[]
-  users: any[]
+  users: User[]
   loadingConvs: boolean
   loadingMsgs: boolean
   loadConversations: () => Promise<void>
   loadUsers: () => Promise<void>
   openConversation: (conv: Conversation) => Promise<void>
-  openOrCreateConversation: (userId: string) => Promise<void>
-  sendMessage: (content: string) => Promise<void>
-  receiveMessage: (msg: any) => void
+  openOrCreateConversation: (userId: string) => Promise<Conversation | null>
+  receiveMessage: (msg: Message) => void
+  updateConvLastMessage: (convId: string, msg: Message) => void
   setConversations: React.Dispatch<React.SetStateAction<Conversation[]>>
+  getUserDisplayName: (userId: string) => string
 }
 
 const ChatContext = createContext<ChatContextType | null>(null)
@@ -51,15 +81,24 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [activeConv, setActiveConv] = useState<Conversation | null>(null)
   const [messages, setMessages] = useState<Message[]>([])
-  const [users, setUsers] = useState<any[]>([])
+  const [users, setUsers] = useState<User[]>([])
   const [loadingConvs, setLoadingConvs] = useState(false)
   const [loadingMsgs, setLoadingMsgs] = useState(false)
+
+  const getUserDisplayName = useCallback(
+    (userId: string) => {
+      const u = users.find((x) => String(x.id || x._id) === String(userId))
+      return u?.displayName || u?.username || 'Unknown'
+    },
+    [users]
+  )
 
   const loadConversations = useCallback(async () => {
     setLoadingConvs(true)
     try {
       const res = await getConversationsApi()
-      setConversations(res.data)
+      const data: Conversation[] = unwrap(res) || []
+      setConversations(data)
     } catch (err) {
       console.error('Failed to load conversations', err)
     } finally {
@@ -70,7 +109,8 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   const loadUsers = useCallback(async () => {
     try {
       const res = await getUsersApi()
-      setUsers(res.data)
+      const data: User[] = unwrap(res) || []
+      setUsers(data)
     } catch (err) {
       console.error('Failed to load users', err)
     }
@@ -80,13 +120,19 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     setActiveConv(conv)
     setLoadingMsgs(true)
     try {
-      const res = await getMessagesApi(String(conv._id || conv.id))
-      setMessages(res.data)
+      const convId = String(conv.id || conv._id)
+      const res = await getMessagesApi(convId)
+      const data: Message[] = unwrap(res) || []
+      // Messages come newest-first from backend (OrderByCreatedAtDesc), reverse for display
+      setMessages([...data].reverse())
+      // Clear unread badge
       setConversations((prev) =>
         prev.map((c) =>
-          (c._id || c.id) === (conv._id || conv.id) ? { ...c, unreadCount: 0 } : c
+          String(c.id || c._id) === convId ? { ...c, unreadCount: 0 } : c
         )
       )
+      // Mark as read on server (fire and forget)
+      markAsReadApi(convId).catch(() => {})
     } catch (err) {
       console.error('Failed to load messages', err)
       setMessages([])
@@ -96,84 +142,95 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const openOrCreateConversation = useCallback(
-    async (userId: string) => {
+    async (userId: string): Promise<Conversation | null> => {
+      // Check if direct conversation already exists locally
       const existing = conversations.find((c) => {
         if (c.type === 'GROUP') return false
-        const ids = (c.participants || []).map((p) => String(p._id || p.id || p))
-        return ids.includes(String(userId))
+        return (c.participants || []).map(String).includes(String(userId))
       })
       if (existing) {
         await openConversation(existing)
-        return
+        return existing
       }
       try {
-        const res = await createConversationApi(userId)
-        const newConv = res.data
+        const res = await createDirectConversationApi(userId)
+        const newConv: Conversation = unwrap(res)
         setConversations((prev) => [newConv, ...prev])
         await openConversation(newConv)
+        return newConv
       } catch (err) {
         console.error('Failed to create conversation', err)
+        return null
       }
     },
     [conversations, openConversation]
   )
 
-  const sendMessage = useCallback(
-    async (content: string) => {
-      if (!activeConv || !content.trim()) return
-      const convId = String(activeConv._id || activeConv.id)
-      try {
-        const res = await sendMessageApi({ conversationId: convId, content: content.trim() })
-        const newMsg = res.data
-        setMessages((prev) => [...prev, newMsg])
-        setConversations((prev) =>
-          prev
-            .map((c) =>
-              (c._id || c.id) === convId
-                ? { ...c, lastMessage: newMsg, updatedAt: newMsg.createdAt }
-                : c
-            )
-            .sort(
-              (a, b) =>
-                new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime()
-            )
-        )
-      } catch (err) {
-        console.error('Failed to send message', err)
+  const receiveMessage = useCallback(
+    (msg: Message) => {
+      const convId = msg.conversationId
+      if (!convId) return
+
+      setConversations((prev) =>
+        prev
+          .map((c) => {
+            if (String(c.id || c._id) !== convId) return c
+            const isActive =
+              activeConv && String(activeConv.id || activeConv._id) === convId
+            return {
+              ...c,
+              lastMessage: {
+                messageId: msg.id,
+                senderId: msg.senderId,
+                senderDisplayName: msg.senderDisplayName,
+                contentPreview: msg.content,
+                messageType: msg.messageType,
+                sentAt: msg.createdAt,
+              },
+              updatedAt: msg.createdAt,
+              unreadCount: isActive ? 0 : (c.unreadCount || 0) + 1,
+            }
+          })
+          .sort(
+            (a, b) =>
+              new Date(b.updatedAt || 0).getTime() -
+              new Date(a.updatedAt || 0).getTime()
+          )
+      )
+
+      if (activeConv && String(activeConv.id || activeConv._id) === convId) {
+        setMessages((prev) => {
+          // Deduplicate by ID
+          if (msg.id && prev.some((m) => String(m.id) === String(msg.id))) {
+            return prev
+          }
+          return [...prev, msg]
+        })
       }
     },
     [activeConv]
   )
 
-  const receiveMessage = useCallback(
-    (msg: any) => {
-      const convId = msg.conversationId
-      setConversations((prev) =>
-        prev
-          .map((c) =>
-            (c._id || c.id) === convId
-              ? {
-                  ...c,
-                  lastMessage: msg,
-                  updatedAt: msg.createdAt,
-                  unreadCount:
-                    activeConv && (activeConv._id || activeConv.id) === convId
-                      ? 0
-                      : (c.unreadCount || 0) + 1,
-                }
-              : c
-          )
-          .sort(
-            (a, b) =>
-              new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime()
-          )
+  const updateConvLastMessage = useCallback((convId: string, msg: Message) => {
+    setConversations((prev) =>
+      prev.map((c) =>
+        String(c.id || c._id) === convId
+          ? {
+              ...c,
+              lastMessage: {
+                messageId: msg.id,
+                senderId: msg.senderId,
+                senderDisplayName: msg.senderDisplayName,
+                contentPreview: msg.content,
+                messageType: msg.messageType,
+                sentAt: msg.createdAt,
+              },
+              updatedAt: msg.createdAt,
+            }
+          : c
       )
-      if (activeConv && (activeConv._id || activeConv.id) === convId) {
-        setMessages((prev) => [...prev, msg])
-      }
-    },
-    [activeConv]
-  )
+    )
+  }, [])
 
   return (
     <ChatContext.Provider
@@ -188,9 +245,10 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         loadUsers,
         openConversation,
         openOrCreateConversation,
-        sendMessage,
         receiveMessage,
+        updateConvLastMessage,
         setConversations,
+        getUserDisplayName,
       }}
     >
       {children}

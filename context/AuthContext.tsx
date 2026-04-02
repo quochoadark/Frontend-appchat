@@ -1,19 +1,30 @@
-import React, { createContext, useContext, useState, useEffect } from 'react'
 import AsyncStorage from '@react-native-async-storage/async-storage'
-import { loginApi } from '../lib/api'
+import React, { createContext, useContext, useEffect, useState } from 'react'
+import { loginApi, registerApi, getMeApi, logoutApi, unwrap } from '../lib/api'
 
-interface User {
-  _id?: string
+export interface User {
   id?: string
+  _id?: string
   username?: string
-  name?: string
   email?: string
+  displayName?: string
+  avatarUrl?: string
+  bio?: string
+  online?: boolean
+  lastSeenAt?: string
+  friendIds?: string[]
 }
 
 interface AuthContextType {
   user: User | null
   loading: boolean
   login: (email: string, password: string) => Promise<void>
+  register: (data: {
+    username: string
+    email: string
+    password: string
+    displayName: string
+  }) => Promise<void>
   logout: () => Promise<void>
   setUser: (user: User | null) => void
 }
@@ -40,7 +51,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setUser(JSON.parse(savedUser))
         }
       } catch {
-        await AsyncStorage.removeItem('user').catch(() => {})
+        await AsyncStorage.removeItem('user').catch(() => { })
       } finally {
         setLoading(false)
       }
@@ -50,21 +61,35 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const login = async (email: string, password: string) => {
     const res = await loginApi(email, password)
-    const { token, accessToken, user: userData } = res.data
-    const jwt = token || accessToken
-    await AsyncStorage.setItem('token', jwt)
+    const { accessToken } = unwrap(res)
+    await AsyncStorage.setItem('token', accessToken)
+
+    const meRes = await getMeApi()
+    const userData: User = unwrap(meRes)
+
     await AsyncStorage.setItem('user', JSON.stringify(userData))
     setUser(userData)
   }
 
+  const register = async (data: {
+    username: string
+    email: string
+    password: string
+    displayName: string
+  }) => {
+    await registerApi(data)
+    // After register, user must log in (backend doesn't return token on register)
+  }
+
   const logout = async () => {
+    await logoutApi().catch(() => {})
     await AsyncStorage.removeItem('token')
     await AsyncStorage.removeItem('user')
     setUser(null)
   }
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout, setUser }}>
+    <AuthContext.Provider value={{ user, loading, login, register, logout, setUser }}>
       {children}
     </AuthContext.Provider>
   )
