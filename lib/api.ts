@@ -1,7 +1,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import axios from 'axios'
 
-const BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://192.168.123.2:8080'
+const BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://192.168.123.3:8080'
+console.log('[API] BASE_URL =', BASE_URL)
 
 const api = axios.create({
   baseURL: BASE_URL,
@@ -19,6 +20,7 @@ api.interceptors.request.use(async (config) => {
 api.interceptors.response.use(
   (res) => res,
   async (err) => {
+    console.error('[API Error]', err.message, err.response?.status, err.response?.data)
     if (err.response?.status === 401) {
       await AsyncStorage.removeItem('token')
       await AsyncStorage.removeItem('user')
@@ -59,7 +61,7 @@ export const updateUserApi = (id: string, data: Partial<{
   displayName: string
   bio: string
   avatarUrl: string
-}>) => api.put(`/users/${id}`, data)
+}>) => api.patch(`/users/${id}`, data)
 
 // ─── Conversations ───────────────────────────────────────────────────────────
 
@@ -95,6 +97,12 @@ export const sendMessageRestApi = (conversationId: string, data: {
   messageType: string
   content?: string
   replyToMessageId?: string
+  media?: {
+    url: string
+    fileName?: string
+    fileSize?: number
+    mimeType?: string
+  }
 }) => api.post(`/conversations/${conversationId}/messages`, data)
 
 export const deleteMessageApi = (messageId: string) =>
@@ -130,6 +138,18 @@ export const cancelFriendRequestApi = (requestId: string) =>
 
 export const unfriendApi = (friendId: string) =>
   api.delete(`/friends/${friendId}`)
+
+// ─── Group Member Management ─────────────────────────────────────────────────
+// NOTE: Verify these endpoints exist on the backend
+
+export const removeGroupMemberApi = (convId: string, userId: string) =>
+  api.delete(`/conversations/${convId}/members/${userId}`)
+
+export const promoteToAdminApi = (convId: string, userId: string) =>
+  api.post(`/conversations/${convId}/admins/${userId}`)
+
+export const demoteFromAdminApi = (convId: string, userId: string) =>
+  api.delete(`/conversations/${convId}/admins/${userId}`)
 
 // ─── File Upload ─────────────────────────────────────────────────────────────
 

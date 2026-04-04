@@ -1,34 +1,33 @@
-import React, { useEffect, useState, useCallback } from 'react'
+import { useRouter } from 'expo-router'
+import React, { useCallback, useEffect, useState } from 'react'
 import {
-  View,
-  Text,
-  TextInput,
-  FlatList,
-  TouchableOpacity,
-  StyleSheet,
   ActivityIndicator,
   Alert,
+  FlatList,
   RefreshControl,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native'
-import { useRouter } from 'expo-router'
-import { useAuth } from '../../context/AuthContext'
-import { useChat } from '../../context/ChatContext'
-import { useSocket } from '../../context/SocketContext'
 import UserAvatar from '../../components/UserAvatar'
 import { Colors } from '../../constants/theme'
+import { useAuth, User } from '../../context/AuthContext'
+import { useChat } from '../../context/ChatContext'
+import { useSocket } from '../../context/SocketContext'
 import {
-  getFriendsApi,
+  acceptFriendRequestApi,
+  cancelFriendRequestApi,
+  declineFriendRequestApi,
   getFriendRequestsReceivedApi,
   getFriendRequestsSentApi,
-  sendFriendRequestApi,
-  acceptFriendRequestApi,
-  declineFriendRequestApi,
-  cancelFriendRequestApi,
-  unfriendApi,
+  getFriendsApi,
   searchUsersApi,
+  sendFriendRequestApi,
+  unfriendApi,
   unwrap,
 } from '../../lib/api'
-import { User } from '../../context/AuthContext'
 
 type SubTab = 'people' | 'friends' | 'requests'
 

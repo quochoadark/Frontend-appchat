@@ -10,6 +10,7 @@ import {
   Platform,
   ScrollView,
 } from 'react-native'
+import { SafeAreaView } from 'react-native-safe-area-context'
 import { useAuth } from '../../context/AuthContext'
 import { Colors } from '../../constants/theme'
 
@@ -47,9 +48,11 @@ export default function LoginScreen() {
     try {
       await login(email.trim(), password)
     } catch (err: any) {
+      console.error('[Login Error]', err)
       setError(
         err.response?.data?.message ||
           err.response?.data?.error ||
+          err.message ||
           'Email hoặc mật khẩu không đúng.'
       )
     } finally {
@@ -96,9 +99,11 @@ export default function LoginScreen() {
       setRegPassword('')
       setRegConfirmPassword('')
     } catch (err: any) {
+      console.error('[Register Error]', err)
       setError(
         err.response?.data?.message ||
           err.response?.data?.error ||
+          err.message ||
           'Đăng ký thất bại. Vui lòng thử lại.'
       )
     } finally {
@@ -107,13 +112,15 @@ export default function LoginScreen() {
   }
 
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-    >
+    <SafeAreaView style={styles.container}>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      >
       <ScrollView
         contentContainerStyle={styles.scroll}
         keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
       >
         <View style={styles.card}>
           {/* Logo */}
@@ -291,7 +298,8 @@ export default function LoginScreen() {
           )}
         </View>
       </ScrollView>
-    </KeyboardAvoidingView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   )
 }
 
@@ -303,7 +311,8 @@ const styles = StyleSheet.create({
   scroll: {
     flexGrow: 1,
     justifyContent: 'center',
-    padding: 24,
+    paddingHorizontal: 24,
+    paddingVertical: 32,
   },
   card: {
     backgroundColor: '#fff',

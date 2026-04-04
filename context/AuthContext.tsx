@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import React, { createContext, useContext, useEffect, useState } from 'react'
-import { loginApi, registerApi, getMeApi, logoutApi, unwrap } from '../lib/api'
+import { getMeApi, loginApi, logoutApi, registerApi, unwrap } from '../lib/api'
 
 export interface User {
   id?: string
@@ -82,7 +82,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   const logout = async () => {
-    await logoutApi().catch(() => {})
+    await logoutApi().catch(() => { })
     await AsyncStorage.removeItem('token')
     await AsyncStorage.removeItem('user')
     setUser(null)

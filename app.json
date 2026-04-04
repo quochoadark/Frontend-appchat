@@ -13,10 +13,26 @@
       "adaptiveIcon": {
         "backgroundColor": "#128C7E"
       },
-      "package": "com.mychatapp"
+      "package": "com.mychatapp",
+      "softwareKeyboardLayoutMode": "pan",
+      "usesCleartextTraffic": true,
+      "permissions": [
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE",
+        "READ_MEDIA_IMAGES",
+        "READ_MEDIA_VIDEO"
+      ]
     },
     "plugins": [
-      "expo-router"
+      "expo-router",
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Cho phép ứng dụng truy cập thư viện ảnh.",
+          "savePhotosPermission": "Cho phép ứng dụng lưu ảnh vào thư viện.",
+          "isAccessMediaLocationEnabled": true
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

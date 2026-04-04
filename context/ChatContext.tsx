@@ -1,8 +1,9 @@
-import React, { createContext, useContext, useState, useCallback } from 'react'
+import React, { createContext, useCallback, useContext, useState } from 'react'
 import {
+  createDirectConversationApi,
   getConversationsApi,
   getMessagesApi,
-  createDirectConversationApi,
+  getUnreadCountApi,
   getUsersApi,
   markAsReadApi,
   unwrap,
@@ -65,7 +66,7 @@ interface ChatContextType {
   users: User[]
   loadingConvs: boolean
   loadingMsgs: boolean
-  loadConversations: () => Promise<void>
+  loadConversations: () => Promise<Conversation[]>
   loadUsers: () => Promise<void>
   openConversation: (conv: Conversation) => Promise<void>
   openOrCreateConversation: (userId: string) => Promise<Conversation | null>
@@ -93,14 +94,42 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     [users]
   )
 
-  const loadConversations = useCallback(async () => {
+  const loadConversations = useCallback(async (): Promise<Conversation[]> => {
     setLoadingConvs(true)
     try {
       const res = await getConversationsApi()
       const data: Conversation[] = unwrap(res) || []
-      setConversations(data)
+
+      // Fetch unread counts for all conversations in parallel
+      const unreadResults = await Promise.all(
+        data.map(async (conv) => {
+          const convId = String(conv.id || conv._id)
+          try {
+            const r = await getUnreadCountApi(convId)
+            return { convId, count: (unwrap(r) as number) || 0 }
+          } catch {
+            return { convId, count: 0 }
+          }
+        })
+      )
+      const unreadMap: Record<string, number> = {}
+      unreadResults.forEach(({ convId, count }) => { unreadMap[convId] = count })
+
+      setConversations((prev) =>
+        data.map((serverConv) => {
+          const convId = String(serverConv.id || serverConv._id)
+          const local = prev.find((c) => String(c.id || c._id) === convId)
+          return {
+            ...serverConv,
+            lastMessage: serverConv.lastMessage ?? local?.lastMessage,
+            unreadCount: unreadMap[convId] ?? local?.unreadCount ?? 0,
+          }
+        })
+      )
+      return data
     } catch (err) {
       console.error('Failed to load conversations', err)
+      return []
     } finally {
       setLoadingConvs(false)
     }
@@ -132,7 +161,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         )
       )
       // Mark as read on server (fire and forget)
-      markAsReadApi(convId).catch(() => {})
+      markAsReadApi(convId).catch(() => { })
     } catch (err) {
       console.error('Failed to load messages', err)
       setMessages([])
@@ -216,17 +245,17 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       prev.map((c) =>
         String(c.id || c._id) === convId
           ? {
-              ...c,
-              lastMessage: {
-                messageId: msg.id,
-                senderId: msg.senderId,
-                senderDisplayName: msg.senderDisplayName,
-                contentPreview: msg.content,
-                messageType: msg.messageType,
-                sentAt: msg.createdAt,
-              },
-              updatedAt: msg.createdAt,
-            }
+            ...c,
+            lastMessage: {
+              messageId: msg.id,
+              senderId: msg.senderId,
+              senderDisplayName: msg.senderDisplayName,
+              contentPreview: msg.content,
+              messageType: msg.messageType,
+              sentAt: msg.createdAt,
+            },
+            updatedAt: msg.createdAt,
+          }
           : c
       )
     )

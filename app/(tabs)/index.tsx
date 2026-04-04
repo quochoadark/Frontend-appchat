@@ -8,13 +8,18 @@ import {
   StyleSheet,
   ActivityIndicator,
   RefreshControl,
+  Modal,
+  Alert,
+  ScrollView,
 } from 'react-native'
 import { useRouter, useFocusEffect } from 'expo-router'
 import { useAuth } from '../../context/AuthContext'
-import { useChat, Conversation } from '../../context/ChatContext'
-import { useSocket } from '../../context/SocketContext'
+import { useChat, Conversation, Message } from '../../context/ChatContext'
+import { ChatNotification, useSocket } from '../../context/SocketContext'
 import UserAvatar from '../../components/UserAvatar'
 import { Colors } from '../../constants/theme'
+import { createGroupConversationApi, getFriendsApi, unwrap } from '../../lib/api'
+import { User } from '../../context/AuthContext'
 
 function formatTime(dateStr?: string) {
   if (!dateStr) return ''
@@ -49,7 +54,7 @@ function getLastMsgText(conv: Conversation): string {
   if (!msg) return 'Bắt đầu cuộc trò chuyện'
   if (msg.messageType === 'IMAGE') return '📷 Ảnh'
   if (msg.messageType === 'FILE') return '📎 Tệp'
-  return msg.contentPreview || ''
+  return msg.contentPreview || 'Bắt đầu cuộc trò chuyện'
 }
 
 export default function ConversationsScreen() {
@@ -61,21 +66,105 @@ export default function ConversationsScreen() {
     openConversation,
     loadingConvs,
     getUserDisplayName,
+    setConversations,
+    receiveMessage,
   } = useChat()
-  const { isOnline } = useSocket()
+  const { isOnline, subscribeConversation } = useSocket()
   const router = useRouter()
   const [search, setSearch] = useState('')
   const [refreshing, setRefreshing] = useState(false)
+  const [isFocused, setIsFocused] = useState(false)
+
+  // Group creation state
+  const [showCreateGroup, setShowCreateGroup] = useState(false)
+  const [groupName, setGroupName] = useState('')
+  const [friends, setFriends] = useState<User[]>([])
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const [creatingGroup, setCreatingGroup] = useState(false)
 
   const myId = String(user?.id || user?._id || '')
 
   // Reload on tab focus
   useFocusEffect(
     useCallback(() => {
+      setIsFocused(true)
       loadConversations()
       loadUsers()
-    }, [])
+      return () => setIsFocused(false)
+    }, [loadConversations, loadUsers])
   )
+
+  // Subscribe to all conversations for real-time last-message updates on the list
+  useEffect(() => {
+    if (!isFocused || conversations.length === 0) return
+    const unsubs = conversations.map((conv) => {
+      const convId = String(conv.id || conv._id)
+      return subscribeConversation(convId, (n: ChatNotification) => {
+        if (n.type === 'NEW_MESSAGE' && n.data) {
+          receiveMessage({
+            id: n.data.id,
+            conversationId: n.data.conversationId || convId,
+            senderId: n.data.senderId,
+            senderDisplayName: n.data.senderDisplayName,
+            messageType: n.data.messageType,
+            content: n.data.content,
+            createdAt: n.data.createdAt,
+          } as Message)
+        }
+      })
+    })
+    return () => unsubs.forEach((u) => u())
+    // conversations.length: re-subscribe only when convs are added/removed, not on every message
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isFocused, conversations.length, subscribeConversation, receiveMessage])
+
+  const openCreateGroup = useCallback(async () => {
+    try {
+      const res = await getFriendsApi()
+      setFriends(unwrap(res) || [])
+    } catch {
+      setFriends([])
+    }
+    setGroupName('')
+    setSelectedIds([])
+    setShowCreateGroup(true)
+  }, [])
+
+  const toggleSelect = (uid: string) => {
+    setSelectedIds((prev) =>
+      prev.includes(uid) ? prev.filter((x) => x !== uid) : [...prev, uid]
+    )
+  }
+
+  const handleCreateGroup = async () => {
+    if (!groupName.trim()) {
+      Alert.alert('Lỗi', 'Vui lòng nhập tên nhóm.')
+      return
+    }
+    if (selectedIds.length < 2) {
+      Alert.alert('Lỗi', 'Chọn ít nhất 2 thành viên.')
+      return
+    }
+    setCreatingGroup(true)
+    try {
+      const res = await createGroupConversationApi({
+        name: groupName.trim(),
+        participantIds: selectedIds,
+      })
+      const newConv: Conversation = unwrap(res)
+      setConversations((prev) => [newConv, ...prev])
+      setShowCreateGroup(false)
+      openConversation(newConv)
+      router.push({
+        pathname: '/chat/[id]',
+        params: { id: String(newConv.id || newConv._id), partnerName: newConv.name || groupName },
+      })
+    } catch (err: any) {
+      Alert.alert('Lỗi', err.response?.data?.message || 'Không thể tạo nhóm.')
+    } finally {
+      setCreatingGroup(false)
+    }
+  }
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true)
@@ -104,11 +193,13 @@ export default function ConversationsScreen() {
     const otherId = (conv.participants || []).map(String).find((id) => id !== myId) || ''
     const name = getConvName(conv, myId, getUserDisplayName)
     const online = otherId ? isOnline(otherId) : false
-    const timeStr = formatTime(conv.updatedAt || conv.lastMessage?.sentAt)
+    const timeStr = formatTime(conv.lastMessage?.sentAt || conv.updatedAt)
+
+    const hasUnread = (conv.unreadCount || 0) > 0
 
     return (
       <TouchableOpacity
-        style={styles.convItem}
+        style={[styles.convItem, hasUnread && styles.convItemUnread]}
         onPress={() => handleOpen(conv)}
         activeOpacity={0.75}
       >
@@ -123,23 +214,22 @@ export default function ConversationsScreen() {
         )}
         <View style={styles.convInfo}>
           <View style={styles.convTop}>
-            <Text style={styles.convName} numberOfLines={1}>
+            <Text style={[styles.convName, hasUnread && styles.convNameUnread]} numberOfLines={1}>
               {name}
               {conv.type === 'GROUP' && (
                 <Text style={styles.groupTag}> 👥</Text>
               )}
             </Text>
-            <Text style={styles.convTime}>{timeStr}</Text>
+            <Text style={[styles.convTime, hasUnread && styles.convTimeUnread]}>{timeStr}</Text>
           </View>
           <View style={styles.convBottom}>
-            <Text style={styles.convLast} numberOfLines={1}>
-              {conv.lastMessage?.senderDisplayName &&
-              conv.lastMessage.senderId !== myId
+            <Text style={[styles.convLast, hasUnread && styles.convLastUnread]} numberOfLines={1}>
+              {conv.lastMessage?.senderDisplayName && conv.lastMessage.senderId !== myId
                 ? `${conv.lastMessage.senderDisplayName}: `
                 : ''}
               {getLastMsgText(conv)}
             </Text>
-            {(conv.unreadCount || 0) > 0 && (
+            {hasUnread && (
               <View style={styles.badge}>
                 <Text style={styles.badgeText}>{conv.unreadCount}</Text>
               </View>
@@ -152,23 +242,95 @@ export default function ConversationsScreen() {
 
   return (
     <View style={styles.container}>
-      <View style={styles.searchBar}>
-        <Text style={styles.searchIcon}>🔍</Text>
-        <TextInput
-          style={styles.searchInput}
-          placeholder="Tìm kiếm..."
-          placeholderTextColor={Colors.textSecondary}
-          value={search}
-          onChangeText={setSearch}
-        />
-        {search.length > 0 && (
-          <TouchableOpacity onPress={() => setSearch('')}>
-            <Text style={{ color: Colors.textSecondary, fontSize: 16, paddingHorizontal: 8 }}>
-              ✕
-            </Text>
-          </TouchableOpacity>
-        )}
+      <View style={styles.topBar}>
+        <View style={styles.searchBar}>
+          <Text style={styles.searchIcon}>🔍</Text>
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Tìm kiếm..."
+            placeholderTextColor={Colors.textSecondary}
+            value={search}
+            onChangeText={setSearch}
+          />
+          {search.length > 0 && (
+            <TouchableOpacity onPress={() => setSearch('')}>
+              <Text style={{ color: Colors.textSecondary, fontSize: 16, paddingHorizontal: 8 }}>
+                ✕
+              </Text>
+            </TouchableOpacity>
+          )}
+        </View>
+        <TouchableOpacity style={styles.createGroupBtn} onPress={openCreateGroup}>
+          <Text style={styles.createGroupBtnText}>👥+</Text>
+        </TouchableOpacity>
       </View>
+
+      {/* Create Group Modal */}
+      <Modal
+        visible={showCreateGroup}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowCreateGroup(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalBox}>
+            <Text style={styles.modalTitle}>Tạo nhóm chat</Text>
+            <TextInput
+              style={styles.modalInput}
+              placeholder="Tên nhóm..."
+              placeholderTextColor={Colors.textSecondary}
+              value={groupName}
+              onChangeText={setGroupName}
+              maxLength={60}
+            />
+            <Text style={styles.modalSubtitle}>
+              Chọn thành viên ({selectedIds.length} đã chọn, tối thiểu 2)
+            </Text>
+            <ScrollView style={styles.friendList} showsVerticalScrollIndicator={false}>
+              {friends.map((f) => {
+                const uid = String(f.id || f._id)
+                const fname = f.displayName || f.username || 'Unknown'
+                const selected = selectedIds.includes(uid)
+                return (
+                  <TouchableOpacity
+                    key={uid}
+                    style={[styles.friendItem, selected && styles.friendItemSelected]}
+                    onPress={() => toggleSelect(uid)}
+                  >
+                    <UserAvatar name={fname} size="sm" />
+                    <Text style={[styles.friendName, selected && styles.friendNameSelected]}>
+                      {fname}
+                    </Text>
+                    {selected && <Text style={styles.checkmark}>✓</Text>}
+                  </TouchableOpacity>
+                )
+              })}
+              {friends.length === 0 && (
+                <Text style={styles.noFriends}>Bạn chưa có bạn bè nào</Text>
+              )}
+            </ScrollView>
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={styles.modalCancel}
+                onPress={() => setShowCreateGroup(false)}
+              >
+                <Text style={styles.modalCancelText}>Huỷ</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalConfirm, creatingGroup && { opacity: 0.6 }]}
+                onPress={handleCreateGroup}
+                disabled={creatingGroup}
+              >
+                {creatingGroup ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={styles.modalConfirmText}>Tạo nhóm</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       {loadingConvs && !refreshing ? (
         <View style={styles.center}>
@@ -198,16 +360,88 @@ export default function ConversationsScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.surface },
+  topBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: 10,
+    marginTop: 10,
+    marginBottom: 0,
+  },
   searchBar: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: Colors.inputBg,
-    margin: 10,
     borderRadius: 20,
     paddingHorizontal: 12,
   },
   searchIcon: { fontSize: 16, marginRight: 6 },
   searchInput: { flex: 1, paddingVertical: 9, fontSize: 15, color: Colors.text },
+  createGroupBtn: {
+    marginLeft: 8,
+    backgroundColor: Colors.primary,
+    borderRadius: 20,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  createGroupBtnText: { fontSize: 16 },
+
+  // Modal styles
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  modalBox: {
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 20,
+    maxHeight: '80%',
+  },
+  modalTitle: { fontSize: 18, fontWeight: 'bold', color: Colors.text, marginBottom: 12 },
+  modalInput: {
+    backgroundColor: Colors.inputBg,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    fontSize: 15,
+    color: Colors.text,
+    marginBottom: 12,
+  },
+  modalSubtitle: { fontSize: 13, color: Colors.textSecondary, marginBottom: 8 },
+  friendList: { maxHeight: 240, marginBottom: 12 },
+  friendItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+    borderRadius: 10,
+    marginBottom: 4,
+  },
+  friendItemSelected: { backgroundColor: Colors.inputBg },
+  friendName: { flex: 1, marginLeft: 10, fontSize: 15, color: Colors.text },
+  friendNameSelected: { color: Colors.primary, fontWeight: '600' },
+  checkmark: { color: Colors.primary, fontSize: 16, fontWeight: 'bold' },
+  noFriends: { color: Colors.textSecondary, textAlign: 'center', paddingVertical: 20 },
+  modalActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10 },
+  modalCancel: {
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+  },
+  modalCancelText: { color: Colors.textSecondary, fontSize: 14 },
+  modalConfirm: {
+    backgroundColor: Colors.primary,
+    borderRadius: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+    minWidth: 90,
+    alignItems: 'center',
+  },
+  modalConfirmText: { color: '#fff', fontSize: 14, fontWeight: '600' },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   emptyText: { color: Colors.textSecondary, fontSize: 15, textAlign: 'center' },
 
@@ -263,4 +497,10 @@ const styles = StyleSheet.create({
   },
   badgeText: { color: '#fff', fontSize: 12, fontWeight: 'bold' },
   separator: { height: 1, backgroundColor: Colors.border, marginLeft: 76 },
+
+  // Unread highlight styles
+  convItemUnread: { backgroundColor: '#F0F9F7' },
+  convNameUnread: { fontWeight: '700', color: Colors.text },
+  convLastUnread: { color: Colors.text, fontWeight: '600' },
+  convTimeUnread: { color: Colors.primary, fontWeight: '600' },
 })
