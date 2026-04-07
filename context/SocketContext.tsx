@@ -49,7 +49,7 @@ const SocketContext = createContext<SocketContextType | null>(null)
 // ─── SockJS raw WebSocket URL ─────────────────────────────────────────────────
 
 function getSockJsWsUrl(base: string): string {
-  // SockJS WebSocket transport path: /{base}/{server3}/{session8}/websocket
+  // SockJS WebSocket transport path: /ws/{server3}/{session8}/websocket
   const wsBase = base.replace(/^http/, 'ws')
   const server = String(Math.floor(Math.random() * 900) + 100)
   const session = Math.random().toString(36).substring(2, 10)
@@ -85,6 +85,7 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
         webSocketFactory: () => new WebSocket(getSockJsWsUrl(BASE_URL)),
         connectHeaders: {
           Authorization: `Bearer ${token}`,
+          'ngrok-skip-browser-warning': 'true',
         },
         reconnectDelay: 5000,
 
