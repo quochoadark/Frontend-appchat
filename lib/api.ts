@@ -12,6 +12,12 @@ const api = axios.create({
   },
 })
 
+// AuthContext đăng ký callback này để nhận sự kiện 401
+let _onUnauthorized: (() => void) | null = null
+export function setUnauthorizedHandler(cb: () => void) {
+  _onUnauthorized = cb
+}
+
 api.interceptors.request.use(async (config) => {
   const token = await AsyncStorage.getItem('token')
   if (token) {
@@ -23,10 +29,11 @@ api.interceptors.request.use(async (config) => {
 api.interceptors.response.use(
   (res) => res,
   async (err) => {
-    console.error('[API Error]', err.message, err.response?.status, err.response?.data)
     if (err.response?.status === 401) {
-      await AsyncStorage.removeItem('token')
-      await AsyncStorage.removeItem('user')
+      await AsyncStorage.multiRemove(['token', 'user'])
+      _onUnauthorized?.()
+    } else {
+      console.error('[API Error]', err.message, err.response?.status, err.response?.data)
     }
     return Promise.reject(err)
   }

@@ -1,8 +1,11 @@
 import React, { useEffect } from 'react'
 import { Stack, useRouter, useSegments } from 'expo-router'
+import { LogBox } from 'react-native'
 import { AuthProvider, useAuth } from '../context/AuthContext'
 import { ChatProvider } from '../context/ChatContext'
 import { SocketProvider } from '../context/SocketContext'
+
+LogBox.ignoreAllLogs()
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth()

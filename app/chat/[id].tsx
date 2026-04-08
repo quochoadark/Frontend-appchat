@@ -1,9 +1,9 @@
-import AsyncStorage from '@react-native-async-storage/async-storage'
 import { Ionicons } from '@expo/vector-icons'
 import * as DocumentPicker from 'expo-document-picker'
 import * as FileSystem from 'expo-file-system/legacy'
 import * as ImagePicker from 'expo-image-picker'
 import * as MediaLibrary from 'expo-media-library'
+import * as Sharing from 'expo-sharing'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import {
@@ -30,6 +30,7 @@ import { useAuth } from '../../context/AuthContext'
 import { Message, useChat } from '../../context/ChatContext'
 import { ChatNotification, useSocket } from '../../context/SocketContext'
 import {
+  deleteMessageApi,
   demoteFromAdminApi,
   getConversationByIdApi,
   getUserByIdApi,
@@ -109,6 +110,7 @@ export default function ChatScreen() {
   const [groupMembers, setGroupMembers] = useState<any[]>([])
   const [groupSearch, setGroupSearch] = useState('')
   const [memberActionLoading, setMemberActionLoading] = useState<string | null>(null)
+  const [deletedMsgIds, setDeletedMsgIds] = useState<Set<string>>(new Set())
 
   const flatListRef = useRef<FlatList>(null)
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -266,7 +268,7 @@ export default function ChatScreen() {
       }
       const ext = url.split('.').pop()?.split('?')[0] || 'jpg'
       const cacheUri = `${FileSystem.cacheDirectory}img_${Date.now()}.${ext}`
-      const { uri } = await FileSystem.downloadAsync(url, cacheUri)
+      const { uri } = await FileSystem.downloadAsync(url, cacheUri, { headers: { 'ngrok-skip-browser-warning': 'true' } })
       await MediaLibrary.saveToLibraryAsync(uri)
       Alert.alert('Thành công', 'Ảnh đã lưu vào thư viện.')
     } catch (e) {
@@ -276,8 +278,6 @@ export default function ChatScreen() {
       setSavingImage(false)
     }
   }
-
-  const DOWNLOADS_DIR_KEY = 'downloads_dir_uri'
 
   const getMimeType = (ext: string): string => {
     const map: Record<string, string> = {
@@ -299,39 +299,53 @@ export default function ChatScreen() {
     return map[ext.toLowerCase()] || 'application/octet-stream'
   }
 
-  const handleDownloadFile = async (url: string, fileName: string) => {
+  const downloadToCache = async (url: string, fileName: string): Promise<string> => {
+    const cacheUri = `${FileSystem.cacheDirectory}dl_${Date.now()}_${fileName}`
+    const { uri } = await FileSystem.downloadAsync(url, cacheUri, {
+      headers: { 'ngrok-skip-browser-warning': 'true' },
+    })
+    return uri
+  }
+
+  const handleShareFile = async (url: string, fileName: string) => {
     setDownloadingFile(url)
     try {
-      let dirUri = await AsyncStorage.getItem(DOWNLOADS_DIR_KEY)
-      if (!dirUri) {
-        const perm = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync()
-        if (!perm.granted) {
-          setDownloadingFile(null)
-          return
-        }
-        dirUri = perm.directoryUri
-        await AsyncStorage.setItem(DOWNLOADS_DIR_KEY, dirUri)
-      }
       const ext = fileName.includes('.') ? fileName.split('.').pop()! : 'bin'
-      const cacheUri = `${FileSystem.cacheDirectory}dl_${Date.now()}.${ext}`
-      const { uri: cachedUri } = await FileSystem.downloadAsync(url, cacheUri)
-      const mime = getMimeType(ext)
-      let destUri: string
-      try {
-        destUri = await FileSystem.StorageAccessFramework.createFileAsync(dirUri, fileName, mime)
-      } catch {
-        // dirUri may be stale — reset and ask again next time
-        await AsyncStorage.removeItem(DOWNLOADS_DIR_KEY)
-        Alert.alert('Lỗi', 'Thư mục không còn hợp lệ. Vui lòng thử lại để chọn thư mục.')
-        setDownloadingFile(null)
-        return
-      }
-      const base64 = await FileSystem.readAsStringAsync(cachedUri, { encoding: FileSystem.EncodingType.Base64 })
-      await FileSystem.writeAsStringAsync(destUri, base64, { encoding: FileSystem.EncodingType.Base64 })
-      Alert.alert('Thành công', `Đã tải "${fileName}" vào thư mục đã chọn.`)
+      const cachedUri = await downloadToCache(url, fileName)
+      await Sharing.shareAsync(cachedUri, {
+        mimeType: getMimeType(ext),
+        dialogTitle: `Chia sẻ "${fileName}"`,
+        UTI: ext,
+      })
     } catch (e) {
-      console.error('[DownloadFile]', e)
-      Alert.alert('Lỗi', 'Không thể tải tệp.')
+      console.error('[ShareFile]', e)
+      Alert.alert('Lỗi', 'Không thể chia sẻ tệp.')
+    } finally {
+      setDownloadingFile(null)
+    }
+  }
+
+  const handleSaveFile = async (url: string, fileName: string) => {
+    setDownloadingFile(url)
+    try {
+      const ext = fileName.includes('.') ? fileName.split('.').pop()! : 'bin'
+      const cachedUri = await downloadToCache(url, fileName)
+      const perm = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync()
+      if (!perm.granted) return
+      const mime = getMimeType(ext)
+      const destUri = await FileSystem.StorageAccessFramework.createFileAsync(
+        perm.directoryUri, fileName, mime
+      )
+      const base64 = await FileSystem.readAsStringAsync(cachedUri, {
+        encoding: FileSystem.EncodingType.Base64,
+      })
+      await FileSystem.writeAsStringAsync(destUri, base64, {
+        encoding: FileSystem.EncodingType.Base64,
+      })
+      Alert.alert('Thành công', `Đã lưu "${fileName}".`)
+    } catch (e) {
+      console.error('[SaveFile]', e)
+      Alert.alert('Lỗi', 'Không thể lưu tệp.')
     } finally {
       setDownloadingFile(null)
     }
@@ -404,6 +418,24 @@ export default function ChatScreen() {
     ])
   }
 
+  const handleDeleteMessage = useCallback((msgId: string) => {
+    Alert.alert('Thu hồi tin nhắn', 'Bạn có muốn thu hồi tin nhắn này?', [
+      { text: 'Huỷ', style: 'cancel' },
+      {
+        text: 'Thu hồi',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await deleteMessageApi(msgId)
+            setDeletedMsgIds(prev => new Set([...prev, msgId]))
+          } catch (err: any) {
+            Alert.alert('Lỗi', err.response?.data?.message || 'Không thể thu hồi tin nhắn.')
+          }
+        },
+      },
+    ])
+  }, [])
+
   const handleToggleAdmin = async (uid: string, currentRole: string) => {
     setMemberActionLoading(uid)
     try {
@@ -437,6 +469,7 @@ export default function ChatScreen() {
       index === messages.length - 1 ||
       messages[index + 1]?.senderId !== msg.senderId
     )
+    const isDeleted = msg.deleted || deletedMsgIds.has(String(msg.id))
 
     return (
       <View>
@@ -451,28 +484,33 @@ export default function ChatScreen() {
               ? <UserAvatar name={msg.senderDisplayName || '?'} size="sm" />
               : <View style={{ width: 32 }} />
           ) : null}
-          <View style={[
-            styles.bubble,
-            isOut ? styles.bubbleOut : styles.bubbleIn,
-            msg.messageType === 'IMAGE' && msg.media?.url ? styles.bubbleMedia : null,
-          ]}>
-            {isGroupConv && !isOut && msg.senderDisplayName && (
+          <TouchableOpacity
+            activeOpacity={1}
+            delayLongPress={400}
+            onLongPress={() => {
+              if (isOut && !isDeleted && msg.id) handleDeleteMessage(String(msg.id))
+            }}
+            style={[
+              styles.bubble,
+              isOut ? styles.bubbleOut : styles.bubbleIn,
+              !isDeleted && msg.messageType === 'IMAGE' && msg.media?.url ? styles.bubbleMedia : null,
+            ]}
+          >
+            {isGroupConv && !isOut && msg.senderDisplayName && !isDeleted && (
               <Text style={styles.senderName}>{msg.senderDisplayName}</Text>
             )}
-            {msg.messageType === 'IMAGE' && msg.media?.url ? (
+            {isDeleted ? (
+              <Text style={styles.deletedText}>Tin nhắn đã bị thu hồi</Text>
+            ) : msg.messageType === 'IMAGE' && msg.media?.url ? (
               <TouchableOpacity activeOpacity={0.9} onPress={() => setViewingImage(msg.media!.url!)}>
                 <Image
-                  source={{ uri: msg.media.url }}
+                  source={{ uri: msg.media.url, headers: { 'ngrok-skip-browser-warning': 'true' } }}
                   style={styles.mediaImage}
                   resizeMode="cover"
                 />
               </TouchableOpacity>
             ) : msg.messageType === 'FILE' && msg.media?.url ? (
-              <TouchableOpacity
-                style={styles.fileCard}
-                onPress={() => handleDownloadFile(msg.media!.url!, msg.media!.fileName || 'file')}
-                disabled={downloadingFile === msg.media.url}
-              >
+              <View style={styles.fileCard}>
                 <Text style={styles.fileCardIcon}>📎</Text>
                 <View style={styles.fileCardInfo}>
                   <Text style={styles.fileCardName} numberOfLines={2}>
@@ -482,19 +520,33 @@ export default function ChatScreen() {
                     <Text style={styles.fileCardSize}>{formatFileSize(msg.media.fileSize)}</Text>
                   )}
                 </View>
-                {downloadingFile === msg.media.url
-                  ? <ActivityIndicator size="small" color={Colors.primary} />
-                  : <Ionicons name="download-outline" size={18} color={Colors.primary} />
-                }
-              </TouchableOpacity>
+                {downloadingFile === msg.media.url ? (
+                  <ActivityIndicator size="small" color={Colors.primary} />
+                ) : (
+                  <View style={styles.fileCardActions}>
+                    <TouchableOpacity
+                      onPress={() => handleSaveFile(msg.media!.url!, msg.media!.fileName || 'file')}
+                      style={styles.fileActionBtn}
+                    >
+                      <Ionicons name="download-outline" size={18} color={Colors.primary} />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={() => handleShareFile(msg.media!.url!, msg.media!.fileName || 'file')}
+                      style={styles.fileActionBtn}
+                    >
+                      <Ionicons name="share-outline" size={18} color={Colors.primary} />
+                    </TouchableOpacity>
+                  </View>
+                )}
+              </View>
             ) : (
               <Text style={styles.bubbleText}>{msg.content}</Text>
             )}
             <View style={styles.bubbleFooter}>
               <Text style={styles.bubbleTime}>{formatTime(msg.createdAt)}</Text>
-              {isOut && <Text style={styles.bubbleTick}>✓✓</Text>}
+              {isOut && !isDeleted && <Text style={styles.bubbleTick}>✓✓</Text>}
             </View>
-          </View>
+          </TouchableOpacity>
         </View>
       </View>
     )
@@ -638,7 +690,7 @@ export default function ChatScreen() {
           </TouchableOpacity>
           {viewingImage && (
             <Image
-              source={{ uri: viewingImage }}
+              source={{ uri: viewingImage, headers: { 'ngrok-skip-browser-warning': 'true' } }}
               style={styles.imgViewerFull}
               resizeMode="contain"
             />
@@ -905,6 +957,8 @@ const styles = StyleSheet.create({
   fileCardInfo: { flex: 1 },
   fileCardName: { fontSize: 13, color: Colors.text, fontWeight: '500' },
   fileCardSize: { fontSize: 11, color: Colors.textSecondary, marginTop: 2 },
+  fileCardActions: { flexDirection: 'row', gap: 4 },
+  fileActionBtn: { padding: 4 },
 
   // ── Image Viewer ────────────────────────────────────────────────────────────
   imgViewerOverlay: {
@@ -939,6 +993,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
   imgViewerBtnText: { color: '#fff', fontSize: 13, fontWeight: '600' },
+  deletedText: { fontSize: 14, color: Colors.textSecondary, fontStyle: 'italic' },
   bubbleFooter: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', marginTop: 3 },
   bubbleTime: { fontSize: 11, color: Colors.textSecondary },
   bubbleTick: { fontSize: 11, color: Colors.primary, marginLeft: 4 },

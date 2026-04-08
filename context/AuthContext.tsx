@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import React, { createContext, useContext, useEffect, useState } from 'react'
-import { getMeApi, loginApi, logoutApi, registerApi, unwrap } from '../lib/api'
+import { getMeApi, loginApi, logoutApi, registerApi, setUnauthorizedHandler, unwrap } from '../lib/api'
 
 export interface User {
   id?: string
@@ -34,6 +34,10 @@ const AuthContext = createContext<AuthContextType | null>(null)
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    setUnauthorizedHandler(() => setUser(null))
+  }, [])
 
   useEffect(() => {
     const restore = async () => {
