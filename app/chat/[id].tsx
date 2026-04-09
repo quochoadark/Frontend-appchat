@@ -41,6 +41,7 @@ import {
   uploadFileApi,
 } from '../../lib/api'
 
+// Danh sách emoji nhanh trong emoji picker
 const EMOJIS = [
   '😀', '😂', '😍', '🥰', '😎', '😭', '😡', '🥳',
   '👍', '👎', '❤️', '🔥', '✅', '🎉', '🙏', '💯',
@@ -48,11 +49,20 @@ const EMOJIS = [
   '👋', '🤝', '💪', '🫶', '🎊', '🌟', '💫', '⭐',
 ]
 
+/**
+ * Format giờ:phút cho timestamp tin nhắn (VD: "14:30")
+ */
 function formatTime(dateStr?: string) {
   if (!dateStr) return ''
   return new Date(dateStr).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
 }
 
+/**
+ * Format nhãn phân cách ngày giữa các tin nhắn:
+ * - Hôm nay: "Hôm nay"
+ * - Hôm qua: "Hôm qua"
+ * - Lâu hơn: "dd/MM/yyyy"
+ */
 function formatDateLabel(dateStr?: string) {
   if (!dateStr) return ''
   const date = new Date(dateStr)
@@ -63,6 +73,12 @@ function formatDateLabel(dateStr?: string) {
   return date.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' })
 }
 
+/**
+ * Format kích thước file thành chuỗi dễ đọc:
+ * - < 1KB: "N B"
+ * - < 1MB: "N.N KB"
+ * - >= 1MB: "N.N MB"
+ */
 function formatFileSize(bytes?: number): string {
   if (!bytes) return ''
   if (bytes < 1024) return `${bytes} B`
@@ -70,6 +86,10 @@ function formatFileSize(bytes?: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
+/**
+ * Kiểm tra hai timestamp có cùng ngày không.
+ * Dùng để quyết định có hiển thị nhãn phân cách ngày trước tin nhắn không.
+ */
 function isSameDay(a?: string, b?: string) {
   if (!a || !b) return false
   const da = new Date(a), db = new Date(b)
@@ -78,58 +98,103 @@ function isSameDay(a?: string, b?: string) {
     da.getDate() === db.getDate()
 }
 
+/**
+ * Màn hình Chat — giao diện nhắn tin chính.
+ *
+ * Route params (từ expo-router dynamic route /chat/[id]):
+ * - id:          ID của conversation
+ * - partnerName: Tên hiển thị (đối với 1-1: tên người kia, nhóm: tên nhóm)
+ * - partnerId:   ID người kia (chỉ có với chat 1-1, dùng để kiểm tra online)
+ *
+ * Tính năng:
+ * - Tin nhắn text, ảnh, file
+ * - Real-time qua WebSocket (STOMP)
+ * - Typing indicator
+ * - Thu hồi tin nhắn (long press)
+ * - Xem ảnh toàn màn hình, lưu ảnh về máy
+ * - Tải/chia sẻ file
+ * - Emoji picker
+ * - Modal thông tin: xem profile (1-1) hoặc quản lý thành viên (nhóm)
+ */
 export default function ChatScreen() {
+  // Lấy params từ route động /chat/[id]
   const { id, partnerName, partnerId } = useLocalSearchParams<{
     id: string; partnerName: string; partnerId: string
   }>()
-  const insets = useSafeAreaInsets()
+  const insets = useSafeAreaInsets() // Safe area padding cho iPhone notch/home indicator
   const router = useRouter()
   const { user } = useAuth()
   const { conversations, messages, loadingMsgs, receiveMessage, openConversation } = useChat()
   const { subscribeConversation, sendTyping, sendRead, isOnline } = useSocket()
 
-  const [text, setText] = useState('')
-  const [showEmoji, setShowEmoji] = useState(false)
-  const [showAttach, setShowAttach] = useState(false)
-  const [typingVisible, setTypingVisible] = useState(false)
-  const [uploading, setUploading] = useState(false)
+  // --- State UI ---
+  const [text, setText] = useState('')               // Nội dung đang gõ trong input
+  const [showEmoji, setShowEmoji] = useState(false)  // Hiện/ẩn emoji picker
+  const [showAttach, setShowAttach] = useState(false) // Hiện/ẩn menu đính kèm
+  const [typingVisible, setTypingVisible] = useState(false) // Hiện "Đang gõ..." indicator
+  const [uploading, setUploading] = useState(false)  // Đang upload file/ảnh
 
-  // Image viewer
-  const [viewingImage, setViewingImage] = useState<string | null>(null)
-  const [savingImage, setSavingImage] = useState(false)
-  // File download
-  const [downloadingFile, setDownloadingFile] = useState<string | null>(null)
+  // --- Image viewer ---
+  const [viewingImage, setViewingImage] = useState<string | null>(null) // URL ảnh đang xem
+  const [savingImage, setSavingImage] = useState(false)                 // Đang lưu ảnh về máy
 
-  // Info modal
+  // --- File download ---
+  const [downloadingFile, setDownloadingFile] = useState<string | null>(null) // URL file đang download
+
+  // --- Modal thông tin (profile 1-1 hoặc thành viên nhóm) ---
   const [showInfo, setShowInfo] = useState(false)
   const [loadingInfo, setLoadingInfo] = useState(false)
-  // Direct info
+
+  // Thông tin chi tiết cho chat 1-1
   const [partnerInfo, setPartnerInfo] = useState<any>(null)
-  // Group info
-  const [groupConv, setGroupConv] = useState<any>(null)
-  const [groupMembers, setGroupMembers] = useState<any[]>([])
-  const [groupSearch, setGroupSearch] = useState('')
-  const [memberActionLoading, setMemberActionLoading] = useState<string | null>(null)
+
+  // Thông tin chi tiết cho nhóm
+  const [groupConv, setGroupConv] = useState<any>(null)         // Dữ liệu nhóm đầy đủ từ API
+  const [groupMembers, setGroupMembers] = useState<any[]>([])   // Danh sách thành viên với info đầy đủ
+  const [groupSearch, setGroupSearch] = useState('')            // Tìm kiếm thành viên trong modal
+  const [memberActionLoading, setMemberActionLoading] = useState<string | null>(null) // ID thành viên đang xử lý
+
+  // Set ID tin nhắn đã bị thu hồi (local state để update UI ngay, không cần refetch)
   const [deletedMsgIds, setDeletedMsgIds] = useState<Set<string>>(new Set())
 
+  // Ref đến FlatList để scroll xuống cuối
   const flatListRef = useRef<FlatList>(null)
+
+  // Ref cho typing debounce: delay gửi sự kiện typing để giảm số lần gửi WebSocket
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Ref để tự động ẩn typing indicator sau 3 giây không có sự kiện mới
   const typingHideRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const name = partnerName || 'Unknown'
   const online = partnerId ? isOnline(partnerId) : false
   const myId = String(user?.id || user?._id || '')
 
+  // Tìm conversation object từ danh sách đã tải để lấy thêm metadata (type, participants)
   const convObj = conversations.find((c) => String(c.id || c._id) === id)
   const isGroupConv = convObj?.type === 'GROUP'
 
+  /**
+   * Khi vào màn hình, tìm và set conversation đang active trong ChatContext.
+   * ChatContext sẽ tải tin nhắn của conversation này.
+   */
   useEffect(() => {
     if (!id) return
     const conv = conversations.find((c) => String(c.id || c._id) === id)
     if (conv) openConversation(conv)
   }, [id])
 
-  // Re-subscribe when receiveMessage changes (fixes stale closure after openConversation sets activeConv)
+  /**
+   * Subscribe WebSocket cho conversation này để nhận tin nhắn real-time.
+   *
+   * Lý do re-subscribe khi receiveMessage thay đổi:
+   * openConversation() tạo closure mới của receiveMessage, nếu không re-subscribe
+   * sẽ bị "stale closure" — vẫn dùng hàm cũ và không cập nhật đúng state.
+   *
+   * Xử lý 2 loại notification:
+   * - NEW_MESSAGE: thêm tin nhắn mới + gửi read receipt
+   * - TYPING: hiện "Đang gõ..." và tự ẩn sau 3 giây
+   */
   useEffect(() => {
     if (!id) return
     const unsubscribe = subscribeConversation(id, (n: ChatNotification) => {
@@ -147,9 +212,12 @@ export default function ChatScreen() {
           deleted: n.data.deleted,
           createdAt: n.data.createdAt,
         } as Message)
+        // Gửi read receipt để server đánh dấu đã đọc và reset unreadCount
         sendRead(id)
       } else if (n.type === 'TYPING' && n.data?.senderId !== myId) {
+        // Chỉ hiện typing indicator khi người khác gõ (không phải mình)
         setTypingVisible(true)
+        // Reset timer ẩn typing: nếu tiếp tục nhận event TYPING thì không ẩn
         if (typingHideRef.current) clearTimeout(typingHideRef.current)
         typingHideRef.current = setTimeout(() => setTypingVisible(false), 3000)
       }
@@ -160,16 +228,30 @@ export default function ChatScreen() {
     }
   }, [id, myId, receiveMessage])
 
+  /**
+   * Tự động scroll xuống cuối khi có tin nhắn mới.
+   * Dùng setTimeout 100ms để đợi FlatList render xong trước khi scroll.
+   * Chỉ trigger khi số lượng tin nhắn thay đổi (dependency: messages.length).
+   */
   useEffect(() => {
     if (messages.length > 0)
       setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100)
   }, [messages.length])
 
-  // Use REST API for sending — message appears immediately without relying on WebSocket echo
+  /**
+   * Gửi tin nhắn text qua REST API.
+   *
+   * Lý do dùng REST thay vì WebSocket để gửi:
+   * Gửi qua REST đảm bảo tin nhắn xuất hiện ngay trong UI (receiveMessage)
+   * mà không phụ thuộc vào WebSocket echo từ server (có thể bị delay hoặc mất).
+   *
+   * Flow: gửi → nhận response → gọi receiveMessage để thêm vào state.
+   * Nếu lỗi: khôi phục lại text vào input.
+   */
   const handleSend = useCallback(async () => {
     if (!text.trim() || !id) return
     const content = text.trim()
-    setText('')
+    setText('') // Xóa input ngay để UX nhanh hơn
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current)
     try {
       const res = await sendMessageRestApi(id, { messageType: 'TEXT', content })
@@ -177,25 +259,47 @@ export default function ChatScreen() {
       if (msg) receiveMessage({ ...msg, conversationId: msg.conversationId || id })
     } catch (err: any) {
       Alert.alert('Lỗi', 'Không thể gửi tin nhắn.')
-      setText(content)
+      setText(content) // Khôi phục text nếu gửi thất bại
     }
   }, [text, id, receiveMessage])
 
+  /**
+   * Xử lý khi người dùng gõ vào input:
+   * - Cập nhật state text
+   * - Gửi sự kiện TYPING qua WebSocket (debounce ngầm bằng cách không gửi liên tục)
+   */
   const handleTextChange = (val: string) => {
     setText(val)
     if (!id) return
     sendTyping(id)
+    // Clear timeout cũ để debounce (không dùng thực sự vì chỉ setTimeout rỗng)
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current)
     typingTimeoutRef.current = setTimeout(() => { }, 2000)
   }
 
+  /**
+   * Chèn emoji vào vị trí cuối của text và đóng emoji picker.
+   */
   const handleEmojiPress = (emoji: string) => {
     setText((prev) => prev + emoji)
     setShowEmoji(false)
   }
 
-  // ── Upload helpers ────────────────────────────────────────────────────────
+  // ── Upload file/ảnh ──────────────────────────────────────────────────────────
 
+  /**
+   * Upload file lên server và gửi tin nhắn chứa media.
+   *
+   * Flow:
+   * 1. Upload file lên /api/files/upload → nhận URL
+   * 2. Gửi tin nhắn với messageType IMAGE/FILE và media object chứa URL
+   * 3. Nhận response và thêm vào state qua receiveMessage
+   *
+   * @param uri         URI local của file (từ ImagePicker hoặc DocumentPicker)
+   * @param fileName    Tên file hiển thị
+   * @param mimeType    MIME type để server xử lý đúng
+   * @param messageType 'IMAGE' hoặc 'FILE'
+   */
   const uploadAndSend = async (
     uri: string,
     fileName: string,
@@ -205,13 +309,15 @@ export default function ChatScreen() {
     if (!id) return
     setUploading(true)
     try {
+      // Tạo FormData để upload multipart
       const formData = new FormData()
       formData.append('file', { uri, name: fileName, type: mimeType } as any)
       const uploadRes = await uploadFileApi(formData)
       const uploaded = unwrap(uploadRes)
+      // Gửi tin nhắn với thông tin media từ server
       const res = await sendMessageRestApi(id, {
         messageType,
-        content: fileName,
+        content: fileName, // content = tên file để hiển thị fallback
         media: {
           url: uploaded?.url || uploaded?.fileUrl,
           fileName: uploaded?.fileName || fileName,
@@ -228,6 +334,11 @@ export default function ChatScreen() {
     }
   }
 
+  /**
+   * Mở thư viện ảnh để chọn ảnh gửi.
+   * Yêu cầu quyền truy cập thư viện ảnh trước.
+   * Quality 0.85: nén nhẹ để giảm kích thước upload mà vẫn giữ chất lượng.
+   */
   const handlePickImage = async () => {
     setShowAttach(false)
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync()
@@ -244,6 +355,10 @@ export default function ChatScreen() {
     await uploadAndSend(asset.uri, asset.fileName || `image_${Date.now()}.jpg`, asset.mimeType || 'image/jpeg', 'IMAGE')
   }
 
+  /**
+   * Mở document picker để chọn file bất kỳ.
+   * copyToCacheDirectory: copy file vào cache để đọc được URI (cần thiết trên Android).
+   */
   const handlePickFile = async () => {
     setShowAttach(false)
     try {
@@ -256,8 +371,13 @@ export default function ChatScreen() {
     }
   }
 
-  // ── Image save ────────────────────────────────────────────────────────────
+  // ── Lưu ảnh về máy ──────────────────────────────────────────────────────────
 
+  /**
+   * Lưu ảnh từ URL về thư viện ảnh của thiết bị.
+   * Flow: xin quyền → download về cache → saveToLibrary
+   * Header ngrok-skip-browser-warning: bypass ngrok warning page khi dev
+   */
   const handleSaveImage = async (url: string) => {
     setSavingImage(true)
     try {
@@ -279,6 +399,11 @@ export default function ChatScreen() {
     }
   }
 
+  /**
+   * Map phần mở rộng file → MIME type.
+   * Cần thiết khi share file để system biết mở bằng app nào.
+   * Fallback: 'application/octet-stream' cho các loại file không rõ.
+   */
   const getMimeType = (ext: string): string => {
     const map: Record<string, string> = {
       pdf: 'application/pdf',
@@ -299,6 +424,10 @@ export default function ChatScreen() {
     return map[ext.toLowerCase()] || 'application/octet-stream'
   }
 
+  /**
+   * Download file từ URL về thư mục cache của app.
+   * Trả về URI local để dùng với Sharing hoặc StorageAccessFramework.
+   */
   const downloadToCache = async (url: string, fileName: string): Promise<string> => {
     const cacheUri = `${FileSystem.cacheDirectory}dl_${Date.now()}_${fileName}`
     const { uri } = await FileSystem.downloadAsync(url, cacheUri, {
@@ -307,6 +436,10 @@ export default function ChatScreen() {
     return uri
   }
 
+  /**
+   * Chia sẻ file qua native share sheet (Sharing.shareAsync).
+   * Người dùng chọn app để mở/share (email, Drive, Zalo, v.v.).
+   */
   const handleShareFile = async (url: string, fileName: string) => {
     setDownloadingFile(url)
     try {
@@ -315,7 +448,7 @@ export default function ChatScreen() {
       await Sharing.shareAsync(cachedUri, {
         mimeType: getMimeType(ext),
         dialogTitle: `Chia sẻ "${fileName}"`,
-        UTI: ext,
+        UTI: ext, // Universal Type Identifier cho iOS
       })
     } catch (e) {
       console.error('[ShareFile]', e)
@@ -325,17 +458,30 @@ export default function ChatScreen() {
     }
   }
 
+  /**
+   * Lưu file vào thư mục do người dùng chọn (Android SAF - Storage Access Framework).
+   * Flow:
+   * 1. Download về cache
+   * 2. Mở dialog chọn thư mục đích (SAF)
+   * 3. Đọc file cache dưới dạng Base64
+   * 4. Ghi vào thư mục đích bằng SAF
+   *
+   * Lý do dùng SAF: Android 10+ không cho phép ghi trực tiếp vào Downloads nếu không có SAF.
+   */
   const handleSaveFile = async (url: string, fileName: string) => {
     setDownloadingFile(url)
     try {
       const ext = fileName.includes('.') ? fileName.split('.').pop()! : 'bin'
       const cachedUri = await downloadToCache(url, fileName)
+      // Yêu cầu người dùng chọn thư mục lưu
       const perm = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync()
       if (!perm.granted) return
       const mime = getMimeType(ext)
+      // Tạo file mới trong thư mục được chọn
       const destUri = await FileSystem.StorageAccessFramework.createFileAsync(
         perm.directoryUri, fileName, mime
       )
+      // Đọc cache file và ghi vào thư mục đích
       const base64 = await FileSystem.readAsStringAsync(cachedUri, {
         encoding: FileSystem.EncodingType.Base64,
       })
@@ -351,8 +497,13 @@ export default function ChatScreen() {
     }
   }
 
-  // ── Info modal ────────────────────────────────────────────────────────────
+  // ── Modal thông tin ──────────────────────────────────────────────────────────
 
+  /**
+   * Mở modal thông tin và tải dữ liệu:
+   * - Nhóm: tải thông tin nhóm đầy đủ + thông tin từng thành viên (song song)
+   * - 1-1: tải thông tin user đối diện (chỉ tải 1 lần, cache trong partnerInfo)
+   */
   const handleOpenInfo = async () => {
     setShowInfo(true)
     setLoadingInfo(true)
@@ -362,26 +513,34 @@ export default function ChatScreen() {
         const fullConv = unwrap(res)
         setGroupConv(fullConv)
         const participantIds: string[] = (fullConv?.participants || []).map(String)
+        // Tải song song thông tin tất cả thành viên
         const memberDetails = await Promise.all(
           participantIds.map((pid) =>
             getUserByIdApi(pid).then((r) => unwrap(r)).catch(() => null)
           )
         )
-        setGroupMembers(memberDetails.filter(Boolean))
+        setGroupMembers(memberDetails.filter(Boolean)) // Lọc bỏ null (user bị xóa)
       } else {
         if (!partnerId) return
+        // Cache: chỉ gọi API nếu chưa tải trước đó
         if (!partnerInfo) {
           const res = await getUserByIdApi(partnerId)
           setPartnerInfo(unwrap(res))
         }
       }
     } catch {
-      // keep whatever partial data we have
+      // Giữ nguyên dữ liệu partial nếu có lỗi
     } finally {
       setLoadingInfo(false)
     }
   }
 
+  /**
+   * Xác định vai trò của một thành viên trong nhóm:
+   * - 'Nhóm trưởng': creatorId hoặc adminIds[0] (người tạo nhóm)
+   * - 'Nhóm phó':    có trong adminIds (được bầu bởi nhóm trưởng)
+   * - 'Thành viên':  tất cả còn lại
+   */
   const getGroupRole = (uid: string): string => {
     if (!groupConv) return 'Thành viên'
     const creatorId = String(groupConv.creatorId || groupConv.adminIds?.[0] || '')
@@ -391,12 +550,20 @@ export default function ChatScreen() {
     return 'Thành viên'
   }
 
+  /**
+   * Kiểm tra xem mình có phải nhóm trưởng không.
+   * Chỉ nhóm trưởng mới có thể kick/bầu admin cho thành viên khác.
+   */
   const amGroupOwner = (): boolean => {
     if (!groupConv) return false
     const creatorId = String(groupConv.creatorId || groupConv.adminIds?.[0] || '')
     return myId === creatorId
   }
 
+  /**
+   * Kick thành viên khỏi nhóm (chỉ nhóm trưởng).
+   * Confirm dialog trước, sau đó gọi API và xóa khỏi state local.
+   */
   const handleKickMember = (uid: string, memberName: string) => {
     Alert.alert('Kick thành viên', `Kick ${memberName} khỏi nhóm?`, [
       { text: 'Không', style: 'cancel' },
@@ -418,6 +585,11 @@ export default function ChatScreen() {
     ])
   }
 
+  /**
+   * Thu hồi tin nhắn của mình (long press).
+   * Gọi API xóa, sau đó thêm msgId vào deletedMsgIds để render "Tin nhắn đã bị thu hồi".
+   * Dùng local Set thay vì re-fetch để update UI ngay lập tức.
+   */
   const handleDeleteMessage = useCallback((msgId: string) => {
     Alert.alert('Thu hồi tin nhắn', 'Bạn có muốn thu hồi tin nhắn này?', [
       { text: 'Huỷ', style: 'cancel' },
@@ -436,17 +608,25 @@ export default function ChatScreen() {
     ])
   }, [])
 
+  /**
+   * Toggle vai trò admin cho thành viên (chỉ nhóm trưởng):
+   * - Nếu đang là Nhóm phó → hạ chức xuống Thành viên (demote)
+   * - Nếu là Thành viên → bầu lên Nhóm phó (promote)
+   * Cập nhật groupConv.adminIds local để UI phản hồi ngay.
+   */
   const handleToggleAdmin = async (uid: string, currentRole: string) => {
     setMemberActionLoading(uid)
     try {
       if (currentRole === 'Nhóm phó') {
         await demoteFromAdminApi(id, uid)
+        // Xóa khỏi adminIds
         setGroupConv((prev: any) => ({
           ...prev,
           adminIds: (prev?.adminIds || []).filter((aid: string) => String(aid) !== uid),
         }))
       } else {
         await promoteToAdminApi(id, uid)
+        // Thêm vào adminIds
         setGroupConv((prev: any) => ({
           ...prev,
           adminIds: [...(prev?.adminIds || []), uid],
@@ -459,49 +639,76 @@ export default function ChatScreen() {
     }
   }
 
-  // ── Render message ────────────────────────────────────────────────────────
+  // ── Render một tin nhắn ──────────────────────────────────────────────────────
 
+  /**
+   * Render một bubble tin nhắn.
+   *
+   * Logic hiển thị:
+   * - showDate:   Hiện nhãn ngày nếu tin nhắn này khác ngày với tin trước
+   * - showAvatar: Chỉ hiện avatar của người gửi (không phải mình) ở tin nhắn cuối
+   *               của một chuỗi liên tiếp từ cùng người (gộp nhóm)
+   * - isDeleted:  Kiểm tra từ msg.deleted (server) VÀ deletedMsgIds (local optimistic)
+   *
+   * Long press: thu hồi tin nhắn của mình (chỉ khi chưa bị thu hồi)
+   *
+   * 3 loại nội dung:
+   * - Đã thu hồi: text italic "Tin nhắn đã bị thu hồi"
+   * - IMAGE:      ảnh có thể nhấn để xem fullscreen
+   * - FILE:       card file với nút download và share
+   * - TEXT:       text thường
+   */
   const renderMessage = ({ item: msg, index }: { item: Message; index: number }) => {
-    const isOut = String(msg.senderId) === myId
+    const isOut = String(msg.senderId) === myId       // Tin nhắn do mình gửi
     const prevMsg = messages[index - 1]
-    const showDate = !prevMsg || !isSameDay(prevMsg.createdAt, msg.createdAt)
+    const showDate = !prevMsg || !isSameDay(prevMsg.createdAt, msg.createdAt) // Khác ngày với tin trước
+    // Hiện avatar ở tin nhắn cuối cùng của một chuỗi từ cùng người gửi
     const showAvatar = !isOut && (
       index === messages.length - 1 ||
       messages[index + 1]?.senderId !== msg.senderId
     )
+    // Tin nhắn bị thu hồi: từ server hoặc từ local state
     const isDeleted = msg.deleted || deletedMsgIds.has(String(msg.id))
 
     return (
       <View>
+        {/* Nhãn phân cách ngày */}
         {showDate && (
           <View style={styles.dateDivider}>
             <Text style={styles.dateDividerText}>{formatDateLabel(msg.createdAt)}</Text>
           </View>
         )}
         <View style={[styles.msgWrapper, isOut && styles.msgWrapperOut]}>
+          {/* Avatar bên trái cho tin nhắn của người khác */}
           {!isOut ? (
             showAvatar
               ? <UserAvatar name={msg.senderDisplayName || '?'} size="sm" />
-              : <View style={{ width: 32 }} />
+              : <View style={{ width: 32 }} /> // Placeholder để giữ alignment khi không có avatar
           ) : null}
           <TouchableOpacity
             activeOpacity={1}
             delayLongPress={400}
+            // Long press để thu hồi — chỉ khi tin nhắn là của mình và chưa bị thu hồi
             onLongPress={() => {
               if (isOut && !isDeleted && msg.id) handleDeleteMessage(String(msg.id))
             }}
             style={[
               styles.bubble,
               isOut ? styles.bubbleOut : styles.bubbleIn,
+              // Bubble ảnh không có padding để ảnh hiển thị sát viền
               !isDeleted && msg.messageType === 'IMAGE' && msg.media?.url ? styles.bubbleMedia : null,
             ]}
           >
+            {/* Tên người gửi trong nhóm (chỉ hiện cho tin nhắn của người khác, không phải tin thu hồi) */}
             {isGroupConv && !isOut && msg.senderDisplayName && !isDeleted && (
               <Text style={styles.senderName}>{msg.senderDisplayName}</Text>
             )}
+
             {isDeleted ? (
+              // Tin nhắn đã thu hồi
               <Text style={styles.deletedText}>Tin nhắn đã bị thu hồi</Text>
             ) : msg.messageType === 'IMAGE' && msg.media?.url ? (
+              // Tin nhắn ảnh: nhấn để xem fullscreen
               <TouchableOpacity activeOpacity={0.9} onPress={() => setViewingImage(msg.media!.url!)}>
                 <Image
                   source={{ uri: msg.media.url, headers: { 'ngrok-skip-browser-warning': 'true' } }}
@@ -510,6 +717,7 @@ export default function ChatScreen() {
                 />
               </TouchableOpacity>
             ) : msg.messageType === 'FILE' && msg.media?.url ? (
+              // Tin nhắn file: card với nút download và share
               <View style={styles.fileCard}>
                 <Text style={styles.fileCardIcon}>📎</Text>
                 <View style={styles.fileCardInfo}>
@@ -521,15 +729,18 @@ export default function ChatScreen() {
                   )}
                 </View>
                 {downloadingFile === msg.media.url ? (
+                  // Đang download file này → hiện spinner thay cho nút
                   <ActivityIndicator size="small" color={Colors.primary} />
                 ) : (
                   <View style={styles.fileCardActions}>
+                    {/* Nút download: lưu vào bộ nhớ thiết bị */}
                     <TouchableOpacity
                       onPress={() => handleSaveFile(msg.media!.url!, msg.media!.fileName || 'file')}
                       style={styles.fileActionBtn}
                     >
                       <Ionicons name="download-outline" size={18} color={Colors.primary} />
                     </TouchableOpacity>
+                    {/* Nút share: mở native share sheet */}
                     <TouchableOpacity
                       onPress={() => handleShareFile(msg.media!.url!, msg.media!.fileName || 'file')}
                       style={styles.fileActionBtn}
@@ -540,8 +751,11 @@ export default function ChatScreen() {
                 )}
               </View>
             ) : (
+              // Tin nhắn text thường
               <Text style={styles.bubbleText}>{msg.content}</Text>
             )}
+
+            {/* Footer: giờ gửi + tick đã gửi (chỉ cho tin của mình) */}
             <View style={styles.bubbleFooter}>
               <Text style={styles.bubbleTime}>{formatTime(msg.createdAt)}</Text>
               {isOut && !isDeleted && <Text style={styles.bubbleTick}>✓✓</Text>}
@@ -552,22 +766,25 @@ export default function ChatScreen() {
     )
   }
 
+  // Filter thành viên theo từ khóa tìm kiếm trong modal nhóm
   const filteredMembers = groupMembers.filter((m) => {
     if (!groupSearch) return true
     const n = (m.displayName || m.username || '').toLowerCase()
     return n.includes(groupSearch.toLowerCase())
   })
 
-  // ── Render ────────────────────────────────────────────────────────────────
+  // ── Render chính ─────────────────────────────────────────────────────────────
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      {/* Header */}
+      {/* Header: nút back + avatar + tên + trạng thái + nút info */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.headerBtn}>
           <Ionicons name="arrow-back" size={24} color="#fff" />
         </TouchableOpacity>
+        {/* Phần giữa header: nhấn để mở modal thông tin */}
         <TouchableOpacity style={styles.headerCenter} onPress={handleOpenInfo} activeOpacity={0.8}>
+          {/* Avatar nhóm: chữ cái đầu, avatar 1-1: UserAvatar với dot online */}
           {isGroupConv ? (
             <View style={styles.headerGroupAvatar}>
               <Text style={styles.headerGroupAvatarText}>{name.charAt(0).toUpperCase()}</Text>
@@ -577,6 +794,7 @@ export default function ChatScreen() {
           )}
           <View style={styles.headerInfo}>
             <Text style={styles.headerName} numberOfLines={1}>{name}</Text>
+            {/* Trạng thái: nhóm hiện số thành viên, 1-1 hiện typing/online/offline */}
             <Text style={styles.headerStatus}>
               {isGroupConv
                 ? `${convObj?.participants?.length || 0} thành viên`
@@ -585,17 +803,23 @@ export default function ChatScreen() {
             </Text>
           </View>
         </TouchableOpacity>
+        {/* Nút info ở góc phải header */}
         <TouchableOpacity style={styles.headerBtn} onPress={handleOpenInfo}>
           <Ionicons name="information-circle-outline" size={24} color="#fff" />
         </TouchableOpacity>
       </View>
 
+      {/*
+        KeyboardAvoidingView: đẩy input area lên trên bàn phím.
+        iOS: 'padding' hoạt động tốt.
+        Android: undefined vì Android tự xử lý với windowSoftInputMode.
+      */}
       <KeyboardAvoidingView
         style={{ flex: 1 }}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         keyboardVerticalOffset={0}
       >
-        {/* Messages */}
+        {/* Vùng hiển thị tin nhắn */}
         <View style={styles.messagesArea}>
           {loadingMsgs ? (
             <View style={styles.center}>
@@ -608,9 +832,11 @@ export default function ChatScreen() {
               keyExtractor={(item, index) => String(item.id || index)}
               renderItem={renderMessage}
               contentContainerStyle={styles.messagesList}
+              // Scroll xuống cuối khi content thay đổi kích thước (ảnh load xong)
               onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: false })}
             />
           )}
+          {/* Typing indicator: chỉ hiện trong chat 1-1, không hiện trong nhóm */}
           {typingVisible && !isGroupConv && (
             <View style={styles.msgWrapper}>
               <UserAvatar name={name} size="sm" />
@@ -621,20 +847,23 @@ export default function ChatScreen() {
           )}
         </View>
 
-        {/* Input Area */}
+        {/* Input area: attach + emoji + text input + send */}
         <View style={[styles.inputArea, { paddingBottom: showAttach ? 8 : (insets.bottom || 0) + 10 }]}>
+          {/* Nút đính kèm: toggle menu attach, đóng emoji */}
           <TouchableOpacity
             style={styles.iconBtn}
             onPress={() => { Keyboard.dismiss(); setShowEmoji(false); setShowAttach((v) => !v) }}
           >
             <Ionicons name="attach" size={22} color={Colors.textSecondary} />
           </TouchableOpacity>
+          {/* Nút emoji: toggle emoji picker, đóng attach menu */}
           <TouchableOpacity
             style={styles.iconBtn}
             onPress={() => { Keyboard.dismiss(); setShowAttach(false); setShowEmoji((v) => !v) }}
           >
             <Text style={styles.emojiIconText}>😊</Text>
           </TouchableOpacity>
+          {/* Text input: đóng cả emoji và attach khi focus */}
           <TextInput
             style={styles.textInput}
             placeholder="Nhập tin nhắn..."
@@ -645,20 +874,21 @@ export default function ChatScreen() {
             multiline
             maxLength={2000}
           />
+          {/* Spinner khi upload, nút send khi có text */}
           {uploading ? (
             <ActivityIndicator size="small" color={Colors.primary} style={{ marginHorizontal: 8 }} />
           ) : (
             <TouchableOpacity
               style={[styles.sendBtn, !text.trim() && styles.sendBtnDisabled]}
               onPress={handleSend}
-              disabled={!text.trim()}
+              disabled={!text.trim()} // Disable khi chưa có nội dung
             >
               <Ionicons name="send" size={20} color="#fff" />
             </TouchableOpacity>
           )}
         </View>
 
-        {/* Attachment menu */}
+        {/* Menu đính kèm: ảnh / tệp */}
         {showAttach && (
           <View style={[styles.attachMenu, { paddingBottom: (insets.bottom || 0) + 14 }]}>
             <TouchableOpacity style={styles.attachItem} onPress={handlePickImage}>
@@ -677,7 +907,7 @@ export default function ChatScreen() {
         )}
       </KeyboardAvoidingView>
 
-      {/* Image Viewer */}
+      {/* Modal xem ảnh fullscreen */}
       <Modal
         visible={!!viewingImage}
         transparent
@@ -685,6 +915,7 @@ export default function ChatScreen() {
         onRequestClose={() => setViewingImage(null)}
       >
         <View style={styles.imgViewerOverlay}>
+          {/* Nút đóng tuyệt đối góc trên phải */}
           <TouchableOpacity style={styles.imgViewerClose} onPress={() => setViewingImage(null)}>
             <Ionicons name="close" size={28} color="#fff" />
           </TouchableOpacity>
@@ -695,6 +926,7 @@ export default function ChatScreen() {
               resizeMode="contain"
             />
           )}
+          {/* Nút lưu ảnh ở dưới cùng */}
           <View style={styles.imgViewerActions}>
             <TouchableOpacity
               style={styles.imgViewerBtn}
@@ -711,13 +943,14 @@ export default function ChatScreen() {
         </View>
       </Modal>
 
-      {/* Emoji Picker */}
+      {/* Modal emoji picker (slide up từ dưới) */}
       <Modal
         visible={showEmoji}
         transparent
         animationType="slide"
         onRequestClose={() => setShowEmoji(false)}
       >
+        {/* Nhấn vùng tối phía trên để đóng */}
         <TouchableOpacity style={styles.emojiOverlay} activeOpacity={1} onPress={() => setShowEmoji(false)}>
           <View style={styles.emojiPicker}>
             <View style={styles.emojiGrid}>
@@ -731,7 +964,7 @@ export default function ChatScreen() {
         </TouchableOpacity>
       </Modal>
 
-      {/* Info Modal */}
+      {/* Modal thông tin (slide up từ dưới — bottom sheet style) */}
       <Modal
         visible={showInfo}
         transparent
@@ -740,13 +973,15 @@ export default function ChatScreen() {
       >
         <View style={styles.infoOverlay}>
           <View style={styles.infoSheet}>
+            {/* Handle bar decorative */}
             <View style={styles.infoHandle} />
 
             {loadingInfo ? (
               <ActivityIndicator size="large" color={Colors.primary} style={{ marginVertical: 40 }} />
             ) : isGroupConv ? (
-              // ── Group Info ──────────────────────────────────────────────
+              // ── Thông tin nhóm ──────────────────────────────────────────────
               <>
+                {/* Header nhóm: avatar chữ cái + tên + số thành viên */}
                 <View style={styles.infoAvatarRow}>
                   <View style={styles.groupInfoAvatar}>
                     <Text style={styles.groupInfoAvatarText}>{name.charAt(0).toUpperCase()}</Text>
@@ -755,6 +990,7 @@ export default function ChatScreen() {
                   <Text style={styles.infoOnline}>{groupMembers.length} thành viên</Text>
                 </View>
 
+                {/* Ô tìm kiếm thành viên */}
                 <View style={styles.groupSearchBar}>
                   <Ionicons name="search-outline" size={16} color={Colors.textSecondary} />
                   <TextInput
@@ -766,6 +1002,7 @@ export default function ChatScreen() {
                   />
                 </View>
 
+                {/* Danh sách thành viên với role và action (chỉ nhóm trưởng) */}
                 <ScrollView style={styles.memberList} showsVerticalScrollIndicator={false}>
                   {filteredMembers.map((m) => {
                     const uid = String(m.id || m._id)
@@ -773,6 +1010,7 @@ export default function ChatScreen() {
                     const role = getGroupRole(uid)
                     const isActing = memberActionLoading === uid
                     const isSelf = uid === myId
+                    // Chỉ nhóm trưởng có thể quản lý, không quản lý được chính mình hoặc nhóm trưởng khác
                     const canManage = amGroupOwner() && !isSelf && role !== 'Nhóm trưởng'
 
                     return (
@@ -784,17 +1022,19 @@ export default function ChatScreen() {
                           </Text>
                           <Text style={[
                             styles.memberRole,
-                            role === 'Nhóm trưởng' && styles.roleOwner,
-                            role === 'Nhóm phó' && styles.roleVice,
+                            role === 'Nhóm trưởng' && styles.roleOwner, // Màu primary
+                            role === 'Nhóm phó' && styles.roleVice,     // Màu primaryLight
                           ]}>
                             {role}
                           </Text>
                         </View>
+                        {/* Nút quản lý: chỉ hiện khi canManage */}
                         {canManage && (
                           isActing ? (
                             <ActivityIndicator size="small" color={Colors.primary} />
                           ) : (
                             <View style={styles.memberActions}>
+                              {/* Toggle bầu/hạ Nhóm phó */}
                               <TouchableOpacity
                                 style={styles.memberActionBtn}
                                 onPress={() => handleToggleAdmin(uid, role)}
@@ -803,6 +1043,7 @@ export default function ChatScreen() {
                                   {role === 'Nhóm phó' ? 'Hạ chức' : 'Bầu NP'}
                                 </Text>
                               </TouchableOpacity>
+                              {/* Nút kick thành viên */}
                               <TouchableOpacity
                                 style={[styles.memberActionBtn, styles.memberKickBtn]}
                                 onPress={() => handleKickMember(uid, mName)}
@@ -821,7 +1062,7 @@ export default function ChatScreen() {
                 </ScrollView>
               </>
             ) : (
-              // ── Direct User Info ──────────────────────────────────────────
+              // ── Thông tin người dùng (chat 1-1) ──────────────────────────────
               <ScrollView showsVerticalScrollIndicator={false}>
                 <View style={styles.infoAvatarRow}>
                   <UserAvatar name={partnerInfo?.displayName || name} size="lg" online={online} />
@@ -865,6 +1106,7 @@ export default function ChatScreen() {
               </ScrollView>
             )}
 
+            {/* Nút đóng modal */}
             <TouchableOpacity style={styles.infoCloseBtn} onPress={() => setShowInfo(false)}>
               <Text style={styles.infoCloseBtnText}>Đóng</Text>
             </TouchableOpacity>
@@ -878,7 +1120,7 @@ export default function ChatScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.surface },
 
-  // ── Header ──────────────────────────────────────────────────────────────
+  // ── Header ──────────────────────────────────────────────────────────────────
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -891,6 +1133,7 @@ const styles = StyleSheet.create({
   headerInfo: { flex: 1, marginLeft: 10 },
   headerName: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
   headerStatus: { color: 'rgba(255,255,255,0.8)', fontSize: 12 },
+  // Avatar nhóm trong header (nhỏ hơn avatar trong modal info)
   headerGroupAvatar: {
     width: 36,
     height: 36,
@@ -901,10 +1144,12 @@ const styles = StyleSheet.create({
   },
   headerGroupAvatarText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
 
-  // ── Messages ─────────────────────────────────────────────────────────────
+  // ── Vùng tin nhắn ────────────────────────────────────────────────────────────
   messagesArea: { flex: 1, backgroundColor: Colors.background },
   messagesList: { padding: 10, paddingBottom: 4 },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+
+  // Nhãn phân cách ngày giữa các tin nhắn
   dateDivider: { alignItems: 'center', marginVertical: 10 },
   dateDividerText: {
     backgroundColor: 'rgba(0,0,0,0.15)',
@@ -914,13 +1159,17 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
     borderRadius: 10,
   },
+
+  // Container của mỗi tin nhắn (avatar + bubble)
   msgWrapper: {
     flexDirection: 'row',
     alignItems: 'flex-end',
     marginBottom: 4,
     paddingHorizontal: 6,
   },
-  msgWrapperOut: { flexDirection: 'row-reverse' },
+  msgWrapperOut: { flexDirection: 'row-reverse' }, // Tin nhắn mình gửi: reverse để bubble bên phải
+
+  // Bubble tin nhắn
   bubble: {
     maxWidth: '75%',
     borderRadius: 12,
@@ -929,20 +1178,24 @@ const styles = StyleSheet.create({
     marginHorizontal: 6,
   },
   bubbleIn: {
-    backgroundColor: Colors.bubbleIn,
-    borderBottomLeftRadius: 4,
+    backgroundColor: Colors.bubbleIn, // Màu nền bubble tin nhắn nhận
+    borderBottomLeftRadius: 4,        // Góc nhọn bên trái dưới (gần avatar)
     elevation: 1,
   },
-  bubbleOut: { backgroundColor: Colors.bubbleOut, borderBottomRightRadius: 4 },
+  bubbleOut: { backgroundColor: Colors.bubbleOut, borderBottomRightRadius: 4 }, // Góc nhọn bên phải dưới
   senderName: { fontSize: 12, color: Colors.primary, fontWeight: '600', marginBottom: 3 },
   bubbleText: { fontSize: 15, color: Colors.text, lineHeight: 20 },
-  bubbleMedia: { padding: 4 },
+  bubbleMedia: { padding: 4 }, // Padding nhỏ hơn cho bubble ảnh
+
+  // Ảnh trong tin nhắn
   mediaImage: {
     width: 200,
     height: 200,
     borderRadius: 8,
     marginBottom: 2,
   },
+
+  // Card file trong tin nhắn
   fileCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -960,10 +1213,10 @@ const styles = StyleSheet.create({
   fileCardActions: { flexDirection: 'row', gap: 4 },
   fileActionBtn: { padding: 4 },
 
-  // ── Image Viewer ────────────────────────────────────────────────────────────
+  // ── Image Viewer fullscreen ──────────────────────────────────────────────────
   imgViewerOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.95)',
+    backgroundColor: 'rgba(0,0,0,0.95)', // Gần đen để tập trung vào ảnh
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -993,14 +1246,20 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
   imgViewerBtnText: { color: '#fff', fontSize: 13, fontWeight: '600' },
+
+  // Tin nhắn đã bị thu hồi
   deletedText: { fontSize: 14, color: Colors.textSecondary, fontStyle: 'italic' },
+
+  // Footer của bubble: giờ + tick
   bubbleFooter: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', marginTop: 3 },
   bubbleTime: { fontSize: 11, color: Colors.textSecondary },
-  bubbleTick: { fontSize: 11, color: Colors.primary, marginLeft: 4 },
+  bubbleTick: { fontSize: 11, color: Colors.primary, marginLeft: 4 }, // ✓✓ màu primary
+
+  // Typing indicator bubble
   typingBubble: { paddingVertical: 10 },
   typingText: { color: Colors.textSecondary, fontSize: 14, fontStyle: 'italic' },
 
-  // ── Input ─────────────────────────────────────────────────────────────────
+  // ── Input area ────────────────────────────────────────────────────────────────
   inputArea: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1025,7 +1284,7 @@ const styles = StyleSheet.create({
     paddingVertical: Platform.OS === 'ios' ? 10 : 7,
     fontSize: 15,
     color: Colors.text,
-    maxHeight: 100,
+    maxHeight: 100, // Giới hạn chiều cao khi multiline (cuộn trong input)
     marginHorizontal: 4,
   },
   sendBtn: {
@@ -1036,9 +1295,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  sendBtnDisabled: { backgroundColor: Colors.border },
+  sendBtnDisabled: { backgroundColor: Colors.border }, // Xám khi chưa có text
 
-  // ── Attach menu ───────────────────────────────────────────────────────────
+  // ── Attach menu ──────────────────────────────────────────────────────────────
   attachMenu: {
     flexDirection: 'row',
     backgroundColor: '#fff',
@@ -1058,7 +1317,7 @@ const styles = StyleSheet.create({
   },
   attachLabel: { fontSize: 12, color: Colors.textSecondary, fontWeight: '500' },
 
-  // ── Emoji ─────────────────────────────────────────────────────────────────
+  // ── Emoji picker ─────────────────────────────────────────────────────────────
   emojiOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.3)' },
   emojiPicker: {
     backgroundColor: '#fff',
@@ -1070,7 +1329,7 @@ const styles = StyleSheet.create({
   emojiBtn: { padding: 8 },
   emojiText: { fontSize: 26 },
 
-  // ── Info Sheet ────────────────────────────────────────────────────────────
+  // ── Info Sheet (bottom sheet) ─────────────────────────────────────────────────
   infoOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.4)' },
   infoSheet: {
     backgroundColor: '#fff',
@@ -1081,6 +1340,7 @@ const styles = StyleSheet.create({
     paddingTop: 12,
     maxHeight: '80%',
   },
+  // Thanh kéo decorative ở đầu bottom sheet
   infoHandle: {
     width: 40,
     height: 4,
@@ -1114,7 +1374,8 @@ const styles = StyleSheet.create({
   },
   infoCloseBtnText: { color: Colors.text, fontSize: 15, fontWeight: '600' },
 
-  // ── Group Info ────────────────────────────────────────────────────────────
+  // ── Group Info specifics ──────────────────────────────────────────────────────
+  // Avatar nhóm lớn trong modal info (khác headerGroupAvatar ở kích thước)
   groupInfoAvatar: {
     width: 72,
     height: 72,
@@ -1135,7 +1396,7 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   groupSearchInput: { flex: 1, fontSize: 14, color: Colors.text },
-  memberList: { maxHeight: 300 },
+  memberList: { maxHeight: 300 }, // Giới hạn để bottom sheet không quá cao
   memberItem: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1146,8 +1407,8 @@ const styles = StyleSheet.create({
   memberInfo: { flex: 1, marginLeft: 10 },
   memberName: { fontSize: 14, fontWeight: '600', color: Colors.text },
   memberRole: { fontSize: 12, color: Colors.textSecondary, marginTop: 1 },
-  roleOwner: { color: Colors.primary, fontWeight: '600' },
-  roleVice: { color: Colors.primaryLight },
+  roleOwner: { color: Colors.primary, fontWeight: '600' },    // Nhóm trưởng: primary
+  roleVice: { color: Colors.primaryLight },                   // Nhóm phó: primaryLight
   memberActions: { flexDirection: 'row', gap: 6 },
   memberActionBtn: {
     borderWidth: 1,
@@ -1157,6 +1418,6 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   memberActionBtnText: { fontSize: 11, color: Colors.primary, fontWeight: '600' },
-  memberKickBtn: { borderColor: Colors.danger },
+  memberKickBtn: { borderColor: Colors.danger }, // Nút kick: viền đỏ
   memberKickText: { color: Colors.danger },
 })

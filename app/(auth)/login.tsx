@@ -14,29 +14,51 @@ import { SafeAreaView } from 'react-native-safe-area-context'
 import { useAuth } from '../../context/AuthContext'
 import { Colors } from '../../constants/theme'
 
+// Tab hiện tại: đăng nhập hay đăng ký
 type Tab = 'login' | 'register'
 
+/**
+ * Màn hình đăng nhập / đăng ký.
+ * Hai form được gộp vào một màn hình, chuyển đổi bằng tab toggle.
+ *
+ * State quản lý:
+ * - tab: xác định form nào đang hiển thị
+ * - email/password: dữ liệu form đăng nhập
+ * - regUsername/regEmail/regDisplayName/regPassword/regConfirmPassword: dữ liệu form đăng ký
+ * - showPwd/showRegPwd: toggle hiện/ẩn mật khẩu
+ * - error/successMsg: thông báo lỗi hoặc thành công
+ * - loading: đang gửi request API
+ */
 export default function LoginScreen() {
   const { login, register } = useAuth()
+
+  // Tab đang active: 'login' hoặc 'register'
   const [tab, setTab] = useState<Tab>('login')
 
-  // Login fields
+  // --- Fields cho form đăng nhập ---
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
 
-  // Register fields
+  // --- Fields cho form đăng ký ---
   const [regUsername, setRegUsername] = useState('')
   const [regEmail, setRegEmail] = useState('')
   const [regDisplayName, setRegDisplayName] = useState('')
   const [regPassword, setRegPassword] = useState('')
   const [regConfirmPassword, setRegConfirmPassword] = useState('')
 
-  const [showPwd, setShowPwd] = useState(false)
-  const [showRegPwd, setShowRegPwd] = useState(false)
-  const [error, setError] = useState('')
-  const [successMsg, setSuccessMsg] = useState('')
-  const [loading, setLoading] = useState(false)
+  const [showPwd, setShowPwd] = useState(false)       // Toggle hiện/ẩn mật khẩu đăng nhập
+  const [showRegPwd, setShowRegPwd] = useState(false) // Toggle hiện/ẩn mật khẩu đăng ký
+  const [error, setError] = useState('')              // Thông báo lỗi
+  const [successMsg, setSuccessMsg] = useState('')    // Thông báo thành công
+  const [loading, setLoading] = useState(false)       // Đang gửi request
 
+  /**
+   * Xử lý đăng nhập:
+   * 1. Validate: email và password không rỗng
+   * 2. Gọi login() từ AuthContext (gọi API, lưu token)
+   * 3. AuthGuard trong _layout.tsx sẽ tự động redirect vào app sau khi login thành công
+   * 4. Nếu lỗi: hiển thị message từ server hoặc fallback message
+   */
   const handleLogin = async () => {
     if (!email.trim() || !password.trim()) {
       setError('Vui lòng nhập đầy đủ thông tin.')
@@ -60,6 +82,16 @@ export default function LoginScreen() {
     }
   }
 
+  /**
+   * Xử lý đăng ký tài khoản mới:
+   * 1. Validate: tất cả fields không rỗng, mật khẩu khớp, tối thiểu 6 ký tự
+   * 2. Gọi register() từ AuthContext
+   * 3. Sau khi đăng ký thành công:
+   *    - Hiện thông báo thành công
+   *    - Chuyển sang tab login
+   *    - Pre-fill email để người dùng chỉ cần nhập mật khẩu
+   *    - Reset tất cả fields đăng ký
+   */
   const handleRegister = async () => {
     if (
       !regUsername.trim() ||
@@ -89,10 +121,11 @@ export default function LoginScreen() {
         displayName: regDisplayName.trim(),
       })
       setSuccessMsg('Đăng ký thành công! Vui lòng đăng nhập.')
-      // Switch to login tab and pre-fill email
+      // Chuyển sang tab login và pre-fill email cho tiện
       setEmail(regEmail.trim())
       setPassword('')
       setTab('login')
+      // Reset form đăng ký
       setRegUsername('')
       setRegEmail('')
       setRegDisplayName('')
@@ -113,17 +146,25 @@ export default function LoginScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
+      {/*
+        KeyboardAvoidingView: đẩy nội dung lên khi bàn phím hiện ra.
+        iOS dùng 'padding', Android dùng 'height' để tránh bị che.
+      */}
       <KeyboardAvoidingView
         style={{ flex: 1 }}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
+      {/*
+        ScrollView với keyboardShouldPersistTaps="handled":
+        cho phép nhấn button trong khi bàn phím đang mở mà không cần dismiss keyboard trước.
+      */}
       <ScrollView
         contentContainerStyle={styles.scroll}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.card}>
-          {/* Logo */}
+          {/* Logo và tên ứng dụng */}
           <View style={styles.logoSection}>
             <View style={styles.logoCircle}>
               <Text style={styles.logoEmoji}>💬</Text>
@@ -132,7 +173,7 @@ export default function LoginScreen() {
             <Text style={styles.appSub}>Nhắn tin thời gian thực</Text>
           </View>
 
-          {/* Tab Toggle */}
+          {/* Tab toggle: chuyển đổi giữa Đăng nhập và Đăng ký */}
           <View style={styles.tabRow}>
             <TouchableOpacity
               style={[styles.tabBtn, tab === 'login' && styles.tabBtnActive]}
@@ -152,10 +193,11 @@ export default function LoginScreen() {
             </TouchableOpacity>
           </View>
 
+          {/* Thông báo thành công (xanh) hoặc lỗi (đỏ) */}
           {successMsg ? <Text style={styles.successMsg}>{successMsg}</Text> : null}
           {error ? <Text style={styles.errorMsg}>{error}</Text> : null}
 
-          {/* ── Login Form ── */}
+          {/* ── Form Đăng nhập ── */}
           {tab === 'login' && (
             <>
               <View style={styles.formGroup}>
@@ -174,6 +216,7 @@ export default function LoginScreen() {
 
               <View style={styles.formGroup}>
                 <Text style={styles.label}>Mật khẩu</Text>
+                {/* inputWrapper + togglePwd: overlay nút mắt lên góc phải của input */}
                 <View style={styles.inputWrapper}>
                   <TextInput
                     style={[styles.input, { paddingRight: 44 }]}
@@ -193,6 +236,7 @@ export default function LoginScreen() {
                 </View>
               </View>
 
+              {/* Nút submit — disable và hiện spinner khi đang loading */}
               <TouchableOpacity
                 style={[styles.btnPrimary, loading && styles.btnDisabled]}
                 onPress={handleLogin}
@@ -207,7 +251,7 @@ export default function LoginScreen() {
             </>
           )}
 
-          {/* ── Register Form ── */}
+          {/* ── Form Đăng ký ── */}
           {tab === 'register' && (
             <>
               <View style={styles.formGroup}>
@@ -218,7 +262,7 @@ export default function LoginScreen() {
                   placeholderTextColor={Colors.textSecondary}
                   value={regDisplayName}
                   onChangeText={setRegDisplayName}
-                  autoCapitalize="words"
+                  autoCapitalize="words" // Tự viết hoa chữ cái đầu mỗi từ
                 />
               </View>
 
@@ -272,6 +316,7 @@ export default function LoginScreen() {
 
               <View style={styles.formGroup}>
                 <Text style={styles.label}>Xác nhận mật khẩu</Text>
+                {/* Không cần toggle vì người dùng đã gõ mật khẩu ở field trên */}
                 <TextInput
                   style={styles.input}
                   placeholder="Nhập lại mật khẩu"
@@ -304,16 +349,19 @@ export default function LoginScreen() {
 }
 
 const styles = StyleSheet.create({
+  // Nền toàn màn hình màu primary
   container: {
     flex: 1,
     backgroundColor: Colors.primary,
   },
+  // ScrollView content: căn giữa dọc, có padding
   scroll: {
     flexGrow: 1,
     justifyContent: 'center',
     paddingHorizontal: 24,
     paddingVertical: 32,
   },
+  // Card trắng chứa toàn bộ form
   card: {
     backgroundColor: '#fff',
     borderRadius: 16,
@@ -324,6 +372,7 @@ const styles = StyleSheet.create({
     shadowRadius: 12,
     elevation: 8,
   },
+  // Phần logo + tên app ở trên cùng
   logoSection: {
     alignItems: 'center',
     marginBottom: 24,
@@ -346,6 +395,7 @@ const styles = StyleSheet.create({
   },
   appSub: { fontSize: 14, color: Colors.textSecondary },
 
+  // Tab toggle (pill style)
   tabRow: {
     flexDirection: 'row',
     backgroundColor: Colors.inputBg,
@@ -360,7 +410,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   tabBtnActive: {
-    backgroundColor: Colors.primary,
+    backgroundColor: Colors.primary, // Tab active có nền primary
   },
   tabText: {
     fontSize: 14,
@@ -369,6 +419,7 @@ const styles = StyleSheet.create({
   },
   tabTextActive: { color: '#fff' },
 
+  // Thông báo thành công (màu xanh primary)
   successMsg: {
     color: Colors.primaryLight,
     fontSize: 13,
@@ -376,6 +427,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     fontWeight: '500',
   },
+  // Thông báo lỗi (màu đỏ)
   errorMsg: {
     color: Colors.danger,
     fontSize: 13,
@@ -399,7 +451,9 @@ const styles = StyleSheet.create({
     color: Colors.text,
     backgroundColor: '#FAFAFA',
   },
+  // Container cho input có nút toggle mật khẩu bên trong
   inputWrapper: { position: 'relative' },
+  // Nút mắt nằm tuyệt đối ở góc phải của input
   togglePwd: {
     position: 'absolute',
     right: 12,
@@ -414,6 +468,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginTop: 6,
   },
-  btnDisabled: { opacity: 0.7 },
+  btnDisabled: { opacity: 0.7 }, // Giảm độ sáng khi đang loading
   btnPrimaryText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
 })
