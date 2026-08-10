@@ -79,6 +79,7 @@ export interface Message {
   }
   replyToMessageId?: string    // ID tin nhắn được reply (nếu có)
   readBy?: Record<string, string> // { userId: timestamp }
+  reactions?: Record<string, string> // { userId: emoji }
   deleted?: boolean             // true = tin nhắn đã bị thu hồi (từ server)
   createdAt?: string
 }
@@ -330,9 +331,14 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       // Chỉ thêm vào messages list nếu đang xem conversation này
       if (activeConv && String(activeConv.id || activeConv._id) === convId) {
         setMessages((prev) => {
-          // Deduplicate: không thêm nếu tin nhắn đã tồn tại (nhận từ REST + WebSocket)
-          if (msg.id && prev.some((m) => String(m.id) === String(msg.id))) {
-            return prev
+          if (msg.id) {
+            const index = prev.findIndex((m) => String(m.id) === String(msg.id));
+            if (index !== -1) {
+              // Deduplicate & Update: Nếu tin nhắn đã tồn tại -> Cập nhật (cho Reaction, Read Receipts)
+              const newMsgs = [...prev];
+              newMsgs[index] = msg;
+              return newMsgs;
+            }
           }
           return [...prev, msg]
         })

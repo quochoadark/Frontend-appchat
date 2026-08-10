@@ -1,101 +1,109 @@
-import AsyncStorage from '@react-native-async-storage/async-storage'
-import axios from 'axios'
+import AsyncStorage from '@react-native-async-storage/async-storage' // Dùng để lưu trữ dữ liệu (như Token) vào bộ nhớ cục bộ của điện thoại
+import axios from 'axios' // Thư viện dùng để gọi API (Gửi request HTTP)
 
 /**
  * URL gốc của backend API.
- * Đọc từ biến môi trường EXPO_PUBLIC_API_URL (file .env).
- * Fallback: địa chỉ local khi develop (thay bằng IP máy tính thực).
+ * Nó sẽ ưu tiên đọc địa chỉ từ biến môi trường EXPO_PUBLIC_API_URL (trong file .env).
+ * Fallback: Nếu không có file .env, nó sẽ dùng địa chỉ local mặc định (http://192.168.123.3:8080).
+ * LƯU Ý: Khi chạy trên điện thoại thật, không dùng được 'localhost', phải dùng IP của máy tính (IP LAN).
  */
 const BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://192.168.123.3:8080'
-console.log('[API] BASE_URL =', BASE_URL)
+console.log('[API] BASE_URL =', BASE_URL) // In ra màn hình console để biết app đang gọi đến server nào
 
 /**
- * Axios instance dùng chung cho toàn bộ ứng dụng.
- * - baseURL: tất cả request sẽ prefix với BASE_URL
- * - timeout: 10 giây — tránh treo vô hạn khi mạng chậm
- * - ngrok-skip-browser-warning: bypass trang cảnh báo của ngrok khi dev với tunnel
+ * Tạo một "Axios instance" dùng chung cho toàn bộ ứng dụng.
+ * Việc này giúp:
+ * - Không phải lặp lại đoạn BASE_URL ở mỗi lần gọi API.
+ * - Có thể cấu hình chung thời gian chờ (timeout) cho mọi Request.
+ * - Có thể cấu hình chung các Header.
  */
 const api = axios.create({
-  baseURL: BASE_URL,
-  timeout: 10000,
+  baseURL: BASE_URL, // Gắn tiền tố đường dẫn cho mọi API
+  timeout: 10000, // Cài đặt thời gian chờ tối đa 10 giây. Nếu mạng lag quá 10s sẽ tự ngắt tránh treo máy.
   headers: {
-    'ngrok-skip-browser-warning': 'true',
+    // Header đặc biệt dùng khi phát triển bằng Ngrok (để bỏ qua trang cảnh báo của Ngrok)
+    'ngrok-skip-browser-warning': 'true', 
   },
 })
 
-// ─── Unauthorized handler ────────────────────────────────────────────────────
+// ─── PHẦN XỬ LÝ LỖI HẾT HẠN TOKEN (UNAUTHORIZED) ────────────────────────────────────────────────────
 
 /**
- * Callback được gọi khi nhận lỗi 401 — đăng ký từ AuthContext.
- * Pattern này tránh circular dependency giữa api.ts và AuthContext.
- * (AuthContext import api.ts, nếu api.ts import AuthContext → circular)
+ * Biến lưu trữ một hàm callback. Hàm này sẽ được gọi khi phát hiện lỗi 401 (Lỗi chưa xác thực/Hết hạn token).
+ * Tại sao phải dùng biến ngoài thay vì import thẳng AuthContext vào đây?
+ * → Để tránh lỗi "Circular Dependency" (Vòng lặp import: api.ts gọi AuthContext, AuthContext lại gọi api.ts).
  */
 let _onUnauthorized: (() => void) | null = null
 
 /**
- * Đăng ký callback xử lý lỗi 401 Unauthorized.
- * Gọi một lần trong AuthProvider khi mount.
+ * Hàm này dùng để AuthContext truyền cái hàm xử lý đăng xuất của nó vào đây.
+ * Sẽ được gọi 1 lần duy nhất lúc app khởi động (trong AuthProvider).
  */
 export function setUnauthorizedHandler(cb: () => void) {
   _onUnauthorized = cb
 }
 
-// ─── Request Interceptor ─────────────────────────────────────────────────────
+// ─── REQUEST INTERCEPTOR (MÀNG LỌC TRƯỚC KHI GỬI REQUEST) ─────────────────────────────────────────────────────
 
 /**
- * Tự động đính kèm JWT token vào header Authorization của mọi request.
- * Token được lấy từ AsyncStorage trước mỗi request để đảm bảo luôn dùng token mới nhất.
- *
- * Lý do đọc AsyncStorage mỗi lần thay vì cache trong memory:
- * Token có thể được cập nhật (refresh) hoặc xóa (logout) bởi code khác.
+ * Interceptor.request: Đứng chặn mọi Request TRƯỚC KHI chúng được gửi lên Server.
+ * Chức năng: Tự động móc lấy JWT Token từ bộ nhớ điện thoại và nhét vào cái Header "Authorization".
+ * 
+ * Tại sao phải đọc AsyncStorage mỗi lần gửi?
+ * → Vì Token có thể bị thay đổi (khi user đăng nhập lại, hoặc khi cấp mới token). 
+ * Đọc trực tiếp sẽ đảm bảo luôn dùng cái mới nhất.
  */
 api.interceptors.request.use(async (config) => {
+  // Bới trong bộ nhớ đệm lấy cái thẻ 'token' ra
   const token = await AsyncStorage.getItem('token')
+  
   if (token) {
+    // Nếu có token, nhét vào Header với định dạng chuẩn Bearer Token
     config.headers.Authorization = `Bearer ${token}`
   }
+  // Cho phép Request tiếp tục bay lên server
   return config
 })
 
-// ─── Response Interceptor ────────────────────────────────────────────────────
+// ─── RESPONSE INTERCEPTOR (MÀNG LỌC SAU KHI SERVER TRẢ KẾT QUẢ VỀ) ────────────────────────────────────────────────────
 
 /**
- * Xử lý lỗi toàn cục:
- * - 401 Unauthorized: xóa token + user khỏi storage → gọi _onUnauthorized (logout)
- * - Các lỗi khác: log để debug
- *
- * Trả về Promise.reject để lỗi vẫn được throw ra cho caller xử lý.
+ * Interceptor.response: Đứng chặn mọi Response TỪ SERVER trả về TRƯỚC KHI đưa vào Code của mình.
+ * Chức năng: Xử lý lỗi tập trung. Đặc biệt là lỗi 401 (Hết hạn Token).
  */
 api.interceptors.response.use(
-  (res) => res, // Response thành công: pass through
+  (res) => res, // Nếu gọi API thành công (Mã 2xx): Cho đi qua bình thường
   async (err) => {
+    // Nếu bị lỗi
     if (err.response?.status === 401) {
-      // Token hết hạn hoặc không hợp lệ → xóa storage và logout
+      // Bắt trúng lỗi 401 (Lỗi xác thực)
+      // Tiến hành dọn dẹp: Xóa sạch token và dữ liệu user đang lưu
       await AsyncStorage.multiRemove(['token', 'user'])
-      _onUnauthorized?.() // Gọi setUser(null) trong AuthContext
+      // Kích hoạt hàm xử lý đăng xuất (đẩy văng user ra màn hình Login)
+      _onUnauthorized?.()
     } else {
-      console.error('[API Error]', err.message, err.response?.status, err.response?.data)
+      // Với các lỗi khác: In log ra màn hình console để DEV dễ debug
+      console.error('[LỖI API]', err.message, err.response?.status, err.response?.data)
     }
+    // Vẫn ném lỗi này ra ngoài để đoạn code nào gọi API tự biết đường hiện thông báo cho User (VD: báo lỗi mật khẩu sai)
     return Promise.reject(err)
   }
 )
 
 /**
- * Unwrap envelope response của backend.
- * Backend trả về format: { statusCode: number, message: string, data: T }
- * Hàm này trích xuất phần data để code gọi API không cần biết về envelope.
- *
- * Fallback: nếu không có data.data thì dùng data trực tiếp (cho các API không có envelope).
+ * Hàm bóc tách dữ liệu (Unwrap payload).
+ * Server Backend Spring Boot thường bọc kết quả trong cấu trúc: { statusCode: 200, message: "OK", data: {...} }
+ * Hàm này giúp bóc cái vỏ ngoài ra, chỉ lấy đúng cái ruột "data" để dùng cho gọn.
  */
 export const unwrap = (res: any) => res?.data?.data ?? res?.data
 
-// ─── Auth ────────────────────────────────────────────────────────────────────
+// ─── CÁC HÀM GỌI API LIÊN QUAN ĐẾN XÁC THỰC (AUTH) ────────────────────────────────────────────────────────────────────
 
-/** POST /auth/login → { accessToken, refreshToken } */
+/** Gọi API Đăng nhập: Trả về Access Token và Refresh Token */
 export const loginApi = (email: string, password: string) =>
   api.post('/auth/login', { email, password })
 
-/** POST /auth/register → tạo tài khoản mới, không trả token */
+/** Gọi API Đăng ký tài khoản mới */
 export const registerApi = (data: {
   username: string
   email: string
@@ -103,88 +111,82 @@ export const registerApi = (data: {
   displayName: string
 }) => api.post('/auth/register', data)
 
-/** GET /auth/me → thông tin user đang đăng nhập */
+/** Gọi API Lấy thông tin user hiện tại (Dựa theo Token đang có) */
 export const getMeApi = () => api.get('/auth/me')
 
-/** POST /auth/logout → server invalidate token */
+/** Gọi API Đăng xuất: Báo cho Server biết để đưa Token vào danh sách đen (Blacklist) */
 export const logoutApi = () => api.post('/auth/logout')
 
-// ─── Users ───────────────────────────────────────────────────────────────────
+// ─── CÁC HÀM GỌI API VỀ NGƯỜI DÙNG (USERS) ───────────────────────────────────────────────────────────────────
 
-/** GET /users → danh sách tất cả users (dùng để cache thông tin tra tên) */
+/** Lấy danh sách tất cả user trong hệ thống */
 export const getUsersApi = () => api.get('/users')
 
 /**
- * GET /users/search → tìm kiếm users theo keyword với phân trang.
- * @param keyword Từ khóa tìm kiếm (username hoặc displayName)
- * @param page    Trang hiện tại (0-based, Spring Page)
- * @param size    Số kết quả mỗi trang (mặc định 10)
- * Trả về Spring Page object: { content, last, totalElements, ... }
+ * Gọi API Tìm kiếm người dùng có hỗ trợ phân trang
+ * @param keyword Tên người dùng cần tìm
+ * @param page    Số thứ tự trang (Bắt đầu từ 0)
+ * @param size    Số lượng kết quả trên mỗi trang
  */
 export const searchUsersApi = (keyword: string, page = 0, size = 10) =>
   api.get('/users/search', { params: { keyword, page, size } })
 
-/** GET /users/{id} → thông tin chi tiết của một user */
+/** Lấy thông tin chi tiết của 1 user bất kỳ theo ID của họ */
 export const getUserByIdApi = (id: string) => api.get(`/users/${id}`)
 
-/** PATCH /users/{id} → cập nhật thông tin profile (displayName, bio, avatarUrl) */
+/** Cập nhật thông tin profile của user (Đổi tên, mô tả, đổi Avatar) */
 export const updateUserApi = (id: string, data: Partial<{
   displayName: string
   bio: string
   avatarUrl: string
 }>) => api.patch(`/users/${id}`, data)
 
-// ─── Conversations ───────────────────────────────────────────────────────────
+// ─── CÁC HÀM GỌI API VỀ CUỘC TRÒ CHUYỆN (CONVERSATIONS) ───────────────────────────────────────────────────────────
 
-/** GET /conversations → danh sách tất cả conversations của user hiện tại */
+/** Lấy danh sách toàn bộ các đoạn chat (box chat) của người dùng hiện tại */
 export const getConversationsApi = () => api.get('/conversations')
 
-/** GET /conversations/{id} → thông tin đầy đủ của một conversation (gồm participants) */
+/** Lấy thông tin chi tiết (gồm các thành viên) của 1 box chat cụ thể */
 export const getConversationByIdApi = (id: string) => api.get(`/conversations/${id}`)
 
 /**
- * POST /conversations/direct → tạo hoặc lấy conversation 1-1 với targetUserId.
- * Backend trả về conversation hiện có nếu đã tồn tại (idempotent).
+ * Tạo mới hoặc mở một cuộc trò chuyện 1-1 với người khác.
+ * Nếu đã từng chat với người này, server sẽ trả về box chat cũ.
  */
 export const createDirectConversationApi = (targetUserId: string) =>
   api.post('/conversations/direct', { targetUserId })
 
-/**
- * POST /conversations/group → tạo nhóm chat mới.
- * participantIds: danh sách userId thành viên (không bao gồm người tạo — backend tự thêm).
- */
+/** Tạo một Box chat Nhóm mới */
 export const createGroupConversationApi = (data: {
-  name: string
-  participantIds: string[]
+  name: string // Tên nhóm
+  participantIds: string[] // Danh sách ID những người được mời vào
   description?: string
   avatarUrl?: string
 }) => api.post('/conversations/group', data)
 
-/** PUT /conversations/{id} → cập nhật thông tin nhóm (tên, mô tả, avatar) */
+/** Sửa thông tin của Group Chat (Đổi tên, avatar) */
 export const updateConversationApi = (id: string, data: {
   name?: string
   description?: string
   avatarUrl?: string
 }) => api.put(`/conversations/${id}`, data)
 
-/** DELETE /conversations/{id} → xóa conversation */
+/** Xóa bỏ hoàn toàn một cuộc trò chuyện khỏi hệ thống */
 export const deleteConversationApi = (id: string) =>
   api.delete(`/conversations/${id}`)
 
-// ─── Messages ────────────────────────────────────────────────────────────────
+// ─── CÁC HÀM GỌI API VỀ TIN NHẮN (MESSAGES) ────────────────────────────────────────────────────────────────
 
 /**
- * GET /conversations/{conversationId}/messages → tải tin nhắn.
- * Trả về theo thứ tự mới nhất trước (OrderByCreatedAtDesc).
- * @param before ISO timestamp để phân trang: lấy tin nhắn trước thời điểm này (load more)
+ * Lấy lịch sử tin nhắn trong 1 box chat.
+ * @param before Mốc thời gian (Nếu truyền vào, nó sẽ lấy các tin cũ hơn mốc này - Phục vụ tính năng Vuốt lên tải thêm)
  */
 export const getMessagesApi = (conversationId: string, before?: string) =>
   api.get(`/conversations/${conversationId}/messages`, before ? { params: { before } } : undefined)
 
 /**
- * POST /conversations/{conversationId}/messages → gửi tin nhắn qua REST.
- * App dùng REST thay vì STOMP để gửi, đảm bảo tin nhắn xuất hiện ngay trong UI.
- * media: thông tin file/ảnh đã upload (URL từ uploadFileApi)
+ * Bắn tin nhắn vào một Box Chat (Thông qua cổng API REST).
+ * Dữ liệu bao gồm Loại tin nhắn, Nội dung, ID tin nhắn được trả lời, và File đính kèm.
  */
 export const sendMessageRestApi = (conversationId: string, data: {
   messageType: string
@@ -198,77 +200,80 @@ export const sendMessageRestApi = (conversationId: string, data: {
   }
 }) => api.post(`/conversations/${conversationId}/messages`, data)
 
-/** DELETE /messages/{messageId} → thu hồi tin nhắn (soft delete — đặt deleted=true) */
+/** Thu hồi (xóa) một tin nhắn cụ thể của bản thân */
 export const deleteMessageApi = (messageId: string) =>
   api.delete(`/messages/${messageId}`)
 
-/** POST /conversations/{conversationId}/messages/read → đánh dấu đã đọc tất cả tin nhắn */
+/** Thả cảm xúc (icon trái tim, haha...) vào tin nhắn */
+export const reactToMessageApi = (messageId: string, emoji?: string) =>
+  api.post(`/messages/${messageId}/react`, null, { params: { emoji } })
+
+/** Bắn tín hiệu "Đã đọc tất cả" trong box chat này lên Server */
 export const markAsReadApi = (conversationId: string) =>
   api.post(`/conversations/${conversationId}/messages/read`)
 
-/** GET /conversations/{conversationId}/messages/unread → số tin nhắn chưa đọc */
+/** Hỏi server đếm xem mình còn bao nhiêu tin nhắn chưa đọc trong box chat này */
 export const getUnreadCountApi = (conversationId: string) =>
   api.get(`/conversations/${conversationId}/messages/unread`)
 
-// ─── Friends ─────────────────────────────────────────────────────────────────
+// ─── CÁC HÀM GỌI API VỀ BẠN BÈ (FRIENDS) ─────────────────────────────────────────────────────────────────
 
-/** GET /friends → danh sách bạn bè hiện tại */
+/** Lấy danh sách bạn bè hiện tại đã kết bạn thành công */
 export const getFriendsApi = () => api.get('/friends')
 
-/** GET /friends/requests/received → lời mời kết bạn nhận được (chờ xử lý) */
+/** Xem ai đang gửi lời mời kết bạn cho mình (Chờ mình đồng ý) */
 export const getFriendRequestsReceivedApi = () =>
   api.get('/friends/requests/received')
 
-/** GET /friends/requests/sent → lời mời kết bạn đã gửi (chờ đối phương xác nhận) */
+/** Xem mình đang gửi lời mời kết bạn cho ai (Đang chờ người ta đồng ý) */
 export const getFriendRequestsSentApi = () =>
   api.get('/friends/requests/sent')
 
-/** POST /friends/requests → gửi lời mời kết bạn đến targetUserId */
+/** Gửi lời mời kết bạn đến 1 người lạ */
 export const sendFriendRequestApi = (targetUserId: string) =>
   api.post('/friends/requests', { targetUserId })
 
-/** POST /friends/requests/{requestId}/accept → chấp nhận lời mời kết bạn */
+/** Đồng ý lời mời kết bạn (Dựa vào ID của cái lời mời đó) */
 export const acceptFriendRequestApi = (requestId: string) =>
   api.post(`/friends/requests/${requestId}/accept`)
 
-/** POST /friends/requests/{requestId}/decline → từ chối lời mời kết bạn */
+/** Từ chối lời mời kết bạn (Bỏ qua) */
 export const declineFriendRequestApi = (requestId: string) =>
   api.post(`/friends/requests/${requestId}/decline`)
 
-/** DELETE /friends/requests/{requestId} → huỷ lời mời kết bạn đã gửi */
+/** Rút lại lời mời kết bạn mình đã trót gửi đi */
 export const cancelFriendRequestApi = (requestId: string) =>
   api.delete(`/friends/requests/${requestId}`)
 
-/** DELETE /friends/{friendId} → huỷ kết bạn */
+/** Xóa bạn bè (Unfriend) */
 export const unfriendApi = (friendId: string) =>
   api.delete(`/friends/${friendId}`)
 
-// ─── Group Member Management ─────────────────────────────────────────────────
-// LƯU Ý: Cần xác nhận các endpoint này đã tồn tại trên backend
+// ─── CÁC HÀM QUẢN LÝ NHÓM (GROUP MEMBER MANAGEMENT) ─────────────────────────────────────────────────
 
-/** DELETE /conversations/{convId}/members/{userId} → kick thành viên khỏi nhóm */
+/** Đuổi (Kick) một thành viên nào đó ra khỏi nhóm chat */
 export const removeGroupMemberApi = (convId: string, userId: string) =>
   api.delete(`/conversations/${convId}/members/${userId}`)
 
-/** POST /conversations/{convId}/admins/{userId} → bầu thành viên lên Nhóm phó */
+/** Thăng quyền một thành viên lên làm Phó Nhóm (Admin) */
 export const promoteToAdminApi = (convId: string, userId: string) =>
   api.post(`/conversations/${convId}/admins/${userId}`)
 
-/** DELETE /conversations/{convId}/admins/{userId} → hạ chức Nhóm phó xuống Thành viên */
+/** Giáng chức Phó Nhóm trở lại thành Thành viên thường */
 export const demoteFromAdminApi = (convId: string, userId: string) =>
   api.delete(`/conversations/${convId}/admins/${userId}`)
 
-// ─── File Upload ─────────────────────────────────────────────────────────────
+// ─── CÁC HÀM GỌI API VỀ TẢI FILE (FILE UPLOAD) ─────────────────────────────────────────────────────────────
 
 /**
- * POST /upload → upload file lên server, trả về URL công khai.
- * formData phải chứa field 'file' với { uri, name, type }.
- * Content-Type multipart/form-data được set thủ công để axios xử lý đúng.
+ * Đẩy hình ảnh/file (Upload) từ điện thoại lên Server để lấy link (URL).
+ * Gửi theo dạng "multipart/form-data" (Dạng đặc biệt chuyên dùng cho file vật lý).
  */
 export const uploadFileApi = (formData: FormData) =>
   api.post('/upload', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   })
 
+// Cho phép các file khác được quyền xuất trực tiếp BASE_URL và Axios Instance
 export { BASE_URL }
 export default api

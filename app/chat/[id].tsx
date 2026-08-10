@@ -24,7 +24,7 @@ import {
   View,
 } from 'react-native'
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
-import UserAvatar from '../../components/UserAvatar'
+import UserAvatar from '../../components/common/UserAvatar'
 import { Colors } from '../../constants/theme'
 import { useAuth } from '../../context/AuthContext'
 import { Message, useChat } from '../../context/ChatContext'
@@ -39,6 +39,7 @@ import {
   sendMessageRestApi,
   unwrap,
   uploadFileApi,
+  reactToMessageApi,
 } from '../../lib/api'
 
 // Danh sách emoji nhanh trong emoji picker
@@ -48,6 +49,34 @@ const EMOJIS = [
   '😊', '🤔', '😴', '🤩', '😏', '🙄', '😬', '🤗',
   '👋', '🤝', '💪', '🫶', '🎊', '🌟', '💫', '⭐',
 ]
+
+/**
+ * Kiểm tra xem chuỗi có phải chỉ chứa từ 1-3 ký tự emoji không.
+ */
+function isOnlyEmoji(str?: string) {
+  if (!str) return false
+  const trimmed = str.replace(/\s+/g, '')
+  if (trimmed.length === 0) return false
+  const emojiRegex = /^[\u{1F300}-\u{1F64F}\u{1F680}-\u{1F6FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1F900}-\u{1F9FF}\u{1F1E6}-\u{1F1FF}\u{1FA70}-\u{1FAFF}\u{2B50}\u{1F3FB}-\u{1F3FF}]+$/u
+  if (!emojiRegex.test(trimmed)) return false
+  return [...trimmed].length <= 3
+}
+
+/**
+ * Trả về icon cho file.
+ */
+function getFileIcon(ext: string) {
+  const map: Record<string, { icon: string, color: string }> = {
+    pdf: { icon: '📄', color: '#e74c3c' },
+    doc: { icon: '📝', color: '#3498db' },
+    docx: { icon: '📝', color: '#3498db' },
+    xls: { icon: '📊', color: '#2ecc71' },
+    xlsx: { icon: '📊', color: '#2ecc71' },
+    zip: { icon: '🗜️', color: '#f1c40f' },
+    rar: { icon: '🗜️', color: '#f1c40f' }
+  }
+  return map[ext.toLowerCase()] || { icon: '📎', color: Colors.textSecondary }
+}
 
 /**
  * Format giờ:phút cho timestamp tin nhắn (VD: "14:30")
@@ -124,7 +153,7 @@ export default function ChatScreen() {
   const insets = useSafeAreaInsets() // Safe area padding cho iPhone notch/home indicator
   const router = useRouter()
   const { user } = useAuth()
-  const { conversations, messages, loadingMsgs, receiveMessage, openConversation } = useChat()
+  const { conversations, messages, loadingMsgs, receiveMessage, openConversation, getUserDisplayName } = useChat()
   const { subscribeConversation, sendTyping, sendRead, isOnline } = useSocket()
 
   // --- State UI ---
@@ -133,6 +162,9 @@ export default function ChatScreen() {
   const [showAttach, setShowAttach] = useState(false) // Hiện/ẩn menu đính kèm
   const [typingVisible, setTypingVisible] = useState(false) // Hiện "Đang gõ..." indicator
   const [uploading, setUploading] = useState(false)  // Đang upload file/ảnh
+
+  // --- Image preview (chờ gửi) ---
+  const [pendingImage, setPendingImage] = useState<{ uri: string, fileName: string, mimeType: string } | null>(null)
 
   // --- Image viewer ---
   const [viewingImage, setViewingImage] = useState<string | null>(null) // URL ảnh đang xem
@@ -156,6 +188,12 @@ export default function ChatScreen() {
 
   // Set ID tin nhắn đã bị thu hồi (local state để update UI ngay, không cần refetch)
   const [deletedMsgIds, setDeletedMsgIds] = useState<Set<string>>(new Set())
+
+  // --- Message Action Menu (Reply, React, Delete) ---
+  const [selectedMessage, setSelectedMessage] = useState<Message | null>(null)
+
+  // --- Reply ---
+  const [replyingTo, setReplyingTo] = useState<Message | null>(null)
 
   // Ref đến FlatList để scroll xuống cuối
   const flatListRef = useRef<FlatList>(null)
@@ -249,19 +287,31 @@ export default function ChatScreen() {
    * Nếu lỗi: khôi phục lại text vào input.
    */
   const handleSend = useCallback(async () => {
-    if (!text.trim() || !id) return
+    if (!text.trim() && !pendingImage) return
     const content = text.trim()
-    setText('') // Xóa input ngay để UX nhanh hơn
+    const imgToSend = pendingImage
+
+    setText('') 
+    setPendingImage(null) // Xóa preview ngay lập tức
+    setShowEmoji(false)
+    setShowAttach(false)
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current)
     try {
-      const res = await sendMessageRestApi(id, { messageType: 'TEXT', content })
-      const msg = unwrap(res)
-      if (msg) receiveMessage({ ...msg, conversationId: msg.conversationId || id })
+      if (imgToSend) {
+        // Nếu có ảnh pending -> gọi uploadAndSend (pass thêm caption)
+        await uploadAndSend(imgToSend.uri, imgToSend.fileName, imgToSend.mimeType, 'IMAGE', content)
+      } else if (id) {
+        const res = await sendMessageRestApi(id, { messageType: 'TEXT', content, replyToMessageId: replyingTo?.id })
+        const msg = unwrap(res)
+        if (msg) receiveMessage({ ...msg, conversationId: msg.conversationId || id })
+      }
+      setReplyingTo(null)
     } catch (err: any) {
       Alert.alert('Lỗi', 'Không thể gửi tin nhắn.')
-      setText(content) // Khôi phục text nếu gửi thất bại
+      setText(content) // Khôi phục text
+      setPendingImage(imgToSend) // Khôi phục ảnh
     }
-  }, [text, id, receiveMessage])
+  }, [text, id, pendingImage, receiveMessage])
 
   /**
    * Xử lý khi người dùng gõ vào input:
@@ -304,7 +354,8 @@ export default function ChatScreen() {
     uri: string,
     fileName: string,
     mimeType: string,
-    messageType: 'IMAGE' | 'FILE'
+    messageType: 'IMAGE' | 'FILE',
+    caption: string = ''
   ) => {
     if (!id) return
     setUploading(true)
@@ -317,7 +368,8 @@ export default function ChatScreen() {
       // Gửi tin nhắn với thông tin media từ server
       const res = await sendMessageRestApi(id, {
         messageType,
-        content: fileName, // content = tên file để hiển thị fallback
+        content: caption || fileName, // content = tên file hoặc caption
+        replyToMessageId: replyingTo?.id,
         media: {
           url: uploaded?.url || uploaded?.fileUrl,
           fileName: uploaded?.fileName || fileName,
@@ -327,6 +379,7 @@ export default function ChatScreen() {
       })
       const msg = unwrap(res)
       if (msg) receiveMessage({ ...msg, conversationId: msg.conversationId || id })
+      setReplyingTo(null)
     } catch (err: any) {
       Alert.alert('Lỗi', err.response?.data?.message || 'Không thể gửi file.')
     } finally {
@@ -352,7 +405,11 @@ export default function ChatScreen() {
     })
     if (result.canceled || !result.assets[0]) return
     const asset = result.assets[0]
-    await uploadAndSend(asset.uri, asset.fileName || `image_${Date.now()}.jpg`, asset.mimeType || 'image/jpeg', 'IMAGE')
+    setPendingImage({
+      uri: asset.uri,
+      fileName: asset.fileName || `image_${Date.now()}.jpg`,
+      mimeType: asset.mimeType || 'image/jpeg'
+    })
   }
 
   /**
@@ -609,6 +666,28 @@ export default function ChatScreen() {
   }, [])
 
   /**
+   * Thả cảm xúc cho tin nhắn
+   */
+  const handleReact = async (emoji: string) => {
+    if (!selectedMessage?.id) return
+    try {
+      await reactToMessageApi(selectedMessage.id, emoji)
+    } catch (err) {
+      console.error(err)
+    } finally {
+      setSelectedMessage(null)
+    }
+  }
+
+  /**
+   * Trả lời tin nhắn
+   */
+  const handleReply = () => {
+    setReplyingTo(selectedMessage)
+    setSelectedMessage(null)
+  }
+
+  /**
    * Toggle vai trò admin cho thành viên (chỉ nhóm trưởng):
    * - Nếu đang là Nhóm phó → hạ chức xuống Thành viên (demote)
    * - Nếu là Thành viên → bầu lên Nhóm phó (promote)
@@ -669,6 +748,7 @@ export default function ChatScreen() {
     )
     // Tin nhắn bị thu hồi: từ server hoặc từ local state
     const isDeleted = msg.deleted || deletedMsgIds.has(String(msg.id))
+    const isOnlyEmo = !isDeleted && msg.messageType === 'TEXT' && isOnlyEmoji(msg.content)
 
     return (
       <View>
@@ -687,21 +767,33 @@ export default function ChatScreen() {
           ) : null}
           <TouchableOpacity
             activeOpacity={1}
-            delayLongPress={400}
-            // Long press để thu hồi — chỉ khi tin nhắn là của mình và chưa bị thu hồi
+            delayLongPress={300}
+            // Mở Action Menu thay vì hỏi xóa ngay
             onLongPress={() => {
-              if (isOut && !isDeleted && msg.id) handleDeleteMessage(String(msg.id))
+              if (!isDeleted && msg.id) {
+                Keyboard.dismiss()
+                setSelectedMessage(msg)
+              }
             }}
             style={[
               styles.bubble,
               isOut ? styles.bubbleOut : styles.bubbleIn,
-              // Bubble ảnh không có padding để ảnh hiển thị sát viền
               !isDeleted && msg.messageType === 'IMAGE' && msg.media?.url ? styles.bubbleMedia : null,
+              isOnlyEmo ? styles.bubbleBigEmoji : null,
             ]}
           >
             {/* Tên người gửi trong nhóm (chỉ hiện cho tin nhắn của người khác, không phải tin thu hồi) */}
-            {isGroupConv && !isOut && msg.senderDisplayName && !isDeleted && (
+            {isGroupConv && !isOut && msg.senderDisplayName && !isDeleted && !isOnlyEmo && (
               <Text style={styles.senderName}>{msg.senderDisplayName}</Text>
+            )}
+
+            {/* Quote block (nếu có reply) */}
+            {!isDeleted && msg.replyToMessageId && (
+              <View style={[styles.quoteBox, isOut ? styles.quoteBoxOut : styles.quoteBoxIn]}>
+                <Text style={styles.quoteText} numberOfLines={2}>
+                  {messages.find(m => String(m.id) === msg.replyToMessageId)?.content || 'Đã trả lời một tin nhắn'}
+                </Text>
+              </View>
             )}
 
             {isDeleted ? (
@@ -709,17 +801,25 @@ export default function ChatScreen() {
               <Text style={styles.deletedText}>Tin nhắn đã bị thu hồi</Text>
             ) : msg.messageType === 'IMAGE' && msg.media?.url ? (
               // Tin nhắn ảnh: nhấn để xem fullscreen
-              <TouchableOpacity activeOpacity={0.9} onPress={() => setViewingImage(msg.media!.url!)}>
-                <Image
-                  source={{ uri: msg.media.url, headers: { 'ngrok-skip-browser-warning': 'true' } }}
-                  style={styles.mediaImage}
-                  resizeMode="cover"
-                />
-              </TouchableOpacity>
+              <View>
+                <TouchableOpacity activeOpacity={0.9} onPress={() => setViewingImage(msg.media!.url!)}>
+                  <Image
+                    source={{ uri: msg.media.url, headers: { 'ngrok-skip-browser-warning': 'true' } }}
+                    style={styles.mediaImage}
+                    resizeMode="cover"
+                  />
+                </TouchableOpacity>
+                {/* Caption của ảnh (nếu khác tên file) */}
+                {msg.content && msg.content !== msg.media.fileName && (
+                  <Text style={[styles.bubbleText, { marginTop: 6, marginHorizontal: 4 }]}>{msg.content}</Text>
+                )}
+              </View>
             ) : msg.messageType === 'FILE' && msg.media?.url ? (
               // Tin nhắn file: card với nút download và share
               <View style={styles.fileCard}>
-                <Text style={styles.fileCardIcon}>📎</Text>
+                <Text style={styles.fileCardIcon}>
+                  {getFileIcon(msg.media.fileName?.split('.').pop() || '').icon}
+                </Text>
                 <View style={styles.fileCardInfo}>
                   <Text style={styles.fileCardName} numberOfLines={2}>
                     {msg.media.fileName || 'Tệp đính kèm'}
@@ -751,17 +851,42 @@ export default function ChatScreen() {
                 )}
               </View>
             ) : (
-              // Tin nhắn text thường
-              <Text style={styles.bubbleText}>{msg.content}</Text>
+              // Tin nhắn text thường hoặc Big Emoji
+              <Text style={isOnlyEmo ? styles.bigEmojiText : styles.bubbleText}>{msg.content}</Text>
             )}
 
-            {/* Footer: giờ gửi + tick đã gửi (chỉ cho tin của mình) */}
-            <View style={styles.bubbleFooter}>
+            {/* Footer: giờ gửi + tick đã gửi */}
+            <View style={[styles.bubbleFooter, isOnlyEmo && { display: 'none' }]}>
               <Text style={styles.bubbleTime}>{formatTime(msg.createdAt)}</Text>
               {isOut && !isDeleted && <Text style={styles.bubbleTick}>✓✓</Text>}
             </View>
           </TouchableOpacity>
+
+          {/* Dải reactions */}
+          {!isDeleted && msg.reactions && Object.keys(msg.reactions).length > 0 && (
+            <View style={[styles.reactionsBadge, isOut ? styles.reactionsBadgeOut : styles.reactionsBadgeIn]}>
+              {Array.from(new Set(Object.values(msg.reactions))).map((emoji, idx) => (
+                <Text key={idx} style={styles.reactionEmoji}>{emoji}</Text>
+              ))}
+              {Object.keys(msg.reactions).length > 1 && (
+                <Text style={styles.reactionCount}>{Object.keys(msg.reactions).length}</Text>
+              )}
+            </View>
+          )}
+
         </View>
+
+        {/* Read Receipts (Chỉ hiện cho tin nhắn cuối cùng) */}
+        {index === messages.length - 1 && isOut && msg.readBy && Object.keys(msg.readBy).some(uid => uid !== myId) && (
+          <View style={styles.readReceiptsRow}>
+            {Object.keys(msg.readBy).filter(uid => uid !== myId).map(uid => (
+              <View key={uid} style={styles.readReceiptAvatar}>
+                <UserAvatar name={getUserDisplayName(uid)} size="xs" />
+              </View>
+            ))}
+          </View>
+        )}
+
       </View>
     )
   }
@@ -847,6 +972,34 @@ export default function ChatScreen() {
           )}
         </View>
 
+        {/* Xem trước trả lời */}
+        {replyingTo && (
+          <View style={styles.previewArea}>
+            <View style={styles.replyPreviewContainer}>
+              <View style={styles.replyPreviewLine} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.replyPreviewName}>Đang trả lời {replyingTo.senderDisplayName || 'ai đó'}</Text>
+                <Text style={styles.replyPreviewContent} numberOfLines={1}>{replyingTo.content || 'Đính kèm'}</Text>
+              </View>
+              <TouchableOpacity style={{ padding: 4 }} onPress={() => setReplyingTo(null)}>
+                <Ionicons name="close-circle" size={24} color={Colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+
+        {/* Xem trước ảnh (nếu có) */}
+        {pendingImage && (
+          <View style={styles.previewArea}>
+            <View style={styles.previewImageContainer}>
+              <Image source={{ uri: pendingImage.uri }} style={styles.previewImage} />
+              <TouchableOpacity style={styles.previewCloseBtn} onPress={() => setPendingImage(null)}>
+                <Ionicons name="close-circle" size={24} color={Colors.text} />
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+
         {/* Input area: attach + emoji + text input + send */}
         <View style={[styles.inputArea, { paddingBottom: showAttach ? 8 : (insets.bottom || 0) + 10 }]}>
           {/* Nút đính kèm: toggle menu attach, đóng emoji */}
@@ -866,7 +1019,7 @@ export default function ChatScreen() {
           {/* Text input: đóng cả emoji và attach khi focus */}
           <TextInput
             style={styles.textInput}
-            placeholder="Nhập tin nhắn..."
+            placeholder={pendingImage ? "Thêm chú thích..." : "Nhập tin nhắn..."}
             placeholderTextColor={Colors.textSecondary}
             value={text}
             onChangeText={handleTextChange}
@@ -874,14 +1027,14 @@ export default function ChatScreen() {
             multiline
             maxLength={2000}
           />
-          {/* Spinner khi upload, nút send khi có text */}
+          {/* Spinner khi upload, nút send khi có text hoặc có ảnh */}
           {uploading ? (
             <ActivityIndicator size="small" color={Colors.primary} style={{ marginHorizontal: 8 }} />
           ) : (
             <TouchableOpacity
-              style={[styles.sendBtn, !text.trim() && styles.sendBtnDisabled]}
+              style={[styles.sendBtn, (!text.trim() && !pendingImage) && styles.sendBtnDisabled]}
               onPress={handleSend}
-              disabled={!text.trim()} // Disable khi chưa có nội dung
+              disabled={!text.trim() && !pendingImage} // Disable khi chưa có nội dung và không có ảnh
             >
               <Ionicons name="send" size={20} color="#fff" />
             </TouchableOpacity>
@@ -959,6 +1112,46 @@ export default function ChatScreen() {
                   <Text style={styles.emojiText}>{em}</Text>
                 </TouchableOpacity>
               ))}
+            </View>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Modal Action Menu (Reactions, Reply, Delete) */}
+      <Modal
+        visible={!!selectedMessage}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSelectedMessage(null)}
+      >
+        <TouchableOpacity style={styles.actionOverlay} activeOpacity={1} onPress={() => setSelectedMessage(null)}>
+          <View style={styles.actionMenu}>
+            {/* Reactions Row */}
+            <View style={styles.reactionRowMenu}>
+              {['❤️', '😆', '😯', '😢', '😡', '👍'].map(emoji => (
+                <TouchableOpacity key={emoji} onPress={() => handleReact(emoji)}>
+                  <Text style={styles.reactionMenuItem}>{emoji}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            {/* Actions */}
+            <View style={styles.actionList}>
+              <TouchableOpacity style={styles.actionItem} onPress={handleReply}>
+                <Ionicons name="arrow-undo-outline" size={20} color={Colors.text} />
+                <Text style={styles.actionItemText}>Trả lời</Text>
+              </TouchableOpacity>
+              
+              {selectedMessage && String(selectedMessage.senderId) === myId && (
+                <TouchableOpacity style={styles.actionItem} onPress={() => {
+                  const id = selectedMessage.id;
+                  setSelectedMessage(null);
+                  if (id) handleDeleteMessage(String(id));
+                }}>
+                  <Ionicons name="trash-outline" size={20} color={Colors.danger} />
+                  <Text style={[styles.actionItemText, { color: Colors.danger }]}>Thu hồi tin nhắn</Text>
+                </TouchableOpacity>
+              )}
             </View>
           </View>
         </TouchableOpacity>
@@ -1186,12 +1379,48 @@ const styles = StyleSheet.create({
   senderName: { fontSize: 12, color: Colors.primary, fontWeight: '600', marginBottom: 3 },
   bubbleText: { fontSize: 15, color: Colors.text, lineHeight: 20 },
   bubbleMedia: { padding: 4 }, // Padding nhỏ hơn cho bubble ảnh
+  bubbleBigEmoji: { backgroundColor: 'transparent', elevation: 0, paddingHorizontal: 0, paddingVertical: 0 },
+  bigEmojiText: { fontSize: 50 },
+
+  // Quote
+  quoteBox: {
+    backgroundColor: 'rgba(0,0,0,0.05)',
+    borderLeftWidth: 3,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 4,
+    marginBottom: 6,
+  },
+  quoteBoxIn: { borderLeftColor: Colors.primary },
+  quoteBoxOut: { borderLeftColor: 'rgba(255,255,255,0.5)', backgroundColor: 'rgba(255,255,255,0.15)' },
+  quoteText: { fontSize: 13, color: Colors.textSecondary },
+
+  // Reactions
+  reactionsBadge: {
+    position: 'absolute',
+    bottom: -10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.2, shadowRadius: 1, elevation: 2,
+  },
+  reactionsBadgeIn: { left: 16 },
+  reactionsBadgeOut: { right: 16 },
+  reactionEmoji: { fontSize: 12 },
+  reactionCount: { fontSize: 11, color: Colors.primary, marginLeft: 2, fontWeight: 'bold' },
+
+  // Read Receipts
+  readReceiptsRow: { flexDirection: 'row', justifyContent: 'flex-end', paddingRight: 8, marginTop: 12 },
+  readReceiptAvatar: { marginLeft: 2 },
 
   // Ảnh trong tin nhắn
   mediaImage: {
     width: 200,
     height: 200,
-    borderRadius: 8,
+    borderRadius: 12,
     marginBottom: 2,
   },
 
@@ -1259,7 +1488,46 @@ const styles = StyleSheet.create({
   typingBubble: { paddingVertical: 10 },
   typingText: { color: Colors.textSecondary, fontSize: 14, fontStyle: 'italic' },
 
+  // ── Action Menu ──────────────────────────────────────────────────────────────
+  actionOverlay: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.4)' },
+  actionMenu: { backgroundColor: '#fff', borderRadius: 16, width: 250, padding: 12, elevation: 5 },
+  reactionRowMenu: { flexDirection: 'row', justifyContent: 'space-between', paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: Colors.border, marginBottom: 8 },
+  reactionMenuItem: { fontSize: 28 },
+  actionList: { gap: 4 },
+  actionItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, gap: 12 },
+  actionItemText: { fontSize: 15, color: Colors.text, fontWeight: '500' },
+
+  // Preview Reply
+  replyPreviewContainer: { flexDirection: 'row', alignItems: 'center', paddingBottom: 8 },
+  replyPreviewLine: { width: 3, height: '100%', backgroundColor: Colors.primary, borderRadius: 2, marginRight: 8 },
+  replyPreviewName: { fontSize: 13, fontWeight: 'bold', color: Colors.primary, marginBottom: 2 },
+  replyPreviewContent: { fontSize: 13, color: Colors.textSecondary },
+
   // ── Input area ────────────────────────────────────────────────────────────────
+  previewArea: {
+    backgroundColor: '#fff',
+    paddingHorizontal: 14,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
+  },
+  previewImageContainer: {
+    position: 'relative',
+    width: 80,
+    height: 80,
+  },
+  previewImage: {
+    width: 80,
+    height: 80,
+    borderRadius: 8,
+  },
+  previewCloseBtn: {
+    position: 'absolute',
+    top: -8,
+    right: -8,
+    backgroundColor: '#fff',
+    borderRadius: 12,
+  },
   inputArea: {
     flexDirection: 'row',
     alignItems: 'center',

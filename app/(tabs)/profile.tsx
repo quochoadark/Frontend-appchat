@@ -8,7 +8,7 @@ import {
   ScrollView,
 } from 'react-native'
 import { useAuth } from '../../context/AuthContext'
-import UserAvatar from '../../components/UserAvatar'
+import UserAvatar from '../../components/common/UserAvatar'
 import { Colors } from '../../constants/theme'
 
 /**

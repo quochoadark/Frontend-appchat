@@ -11,7 +11,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native'
-import UserAvatar from '../../components/UserAvatar'
+import UserAvatar from '../../components/common/UserAvatar'
 import { Colors } from '../../constants/theme'
 import { useAuth, User } from '../../context/AuthContext'
 import { useChat } from '../../context/ChatContext'

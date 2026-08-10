@@ -1,6 +1,6 @@
 import React from 'react'
 import { View, Text, StyleSheet } from 'react-native'
-import { Colors } from '../constants/theme'
+import { Colors } from '../../constants/theme'
 
 // Bảng màu nền avatar — được chọn ngẫu nhiên dựa trên chữ cái đầu tên
 const COLORS = [
@@ -19,11 +19,11 @@ function getColor(name = '') {
 }
 
 // Kích thước avatar theo prop size
-const SIZES = { sm: 40, md: 48, lg: 64 }
+const SIZES = { xs: 16, sm: 40, md: 48, lg: 64 }
 
 interface Props {
   name?: string           // Tên người dùng — dùng để lấy chữ cái đầu và tính màu
-  size?: 'sm' | 'md' | 'lg'
+  size?: 'xs' | 'sm' | 'md' | 'lg'
   online?: boolean        // Hiện dot xanh góc dưới phải nếu true
 }
 
